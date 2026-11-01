@@ -44,7 +44,7 @@ Honest status of what has been verified, and how:
 | Packaged app | ✅ `Awake.app` + DMG built and launched; session, single-instance handoff, AppleScript (Cmd+Q path) quit, and Dock hiding (`lsappinfo`: `UIElement` while in the menu bar, `Foreground` with the window open) verified | ⚠️ `Awake.exe` and the Setup installer are built by CI; not yet launched on a Windows desktop |
 | Menu bar / tray | ✅ Tray icon created (`tray_shown available=True`); menu logic covered by offscreen tests. Clicking through the real menu bar was **not** automated | ❌ Not verified |
 | Notifications | ⚠️ Implemented via `QSystemTrayIcon.showMessage`; not visually confirmed | ❌ Not verified |
-| AI-agent detection (Claude Code) | ✅ Live: detected this machine's busy Claude Code sessions and held a system assertion; idle→release covered by unit tests (see TESTING.md for the live result) | ⚠️ Unit-tested only; `claude agents --json` on Windows is undocumented — not yet tried on a Windows PC |
+| AI-agent detection (Claude Code) | ✅ Live on a real Mac: detected 3 busy Claude Code sessions within 0.5 s and held a system-only assertion; turning AI mode off released instantly and on re-acquired in 0.1 s. Automatic release after all sessions go idle is unit-tested but not yet observed live | ⚠️ On GitHub's Windows runner: `claude agents --json` works (Claude Code 2.1.316) and Awake recognises a running `claude.exe` and builds the right command. Not yet tried with a real working session on a Windows PC |
 | Launch at startup | ⚠️ LaunchAgent plist generation unit-tested; a real login cycle was not performed | ⚠️ Run-key logic unit-tested with a fake registry |
 
 ### Measured performance (macOS, packaged `Awake.app`, session active, window hidden)

@@ -110,7 +110,7 @@ port**, works even if Awake isn't running yet, cross-platform. Awake watches tha
 
 ### Implementation phases
 
-1. ✅ **Shipped in 0.2**: `AgentMonitor` + Claude (`claude agents --json`) + process discovery + coordinator with grace/cap/battery guard, dashboard row, tray toggle and `☀ AI` label — macOS verified live, Windows unit-tested only.
+1. ✅ **Shipped in 0.2**: `AgentMonitor` + Claude (`claude agents --json`) + process discovery + coordinator with grace/cap/battery guard, dashboard row, tray toggle and `☀ AI` label — macOS verified live; on Windows (GitHub runner) `claude agents --json` works and Awake's process matching recognises `claude.exe` — a real working session on a Windows PC is still untested.
 2. Codex rollout signal, CPU fallback, Agents UI card and settings, battery policy.
 3. Opt-in hook installer and drop-box for Claude, Codex, Cursor, OpenCode, Gemini.
 4. Windows: verify Modern Standby behaviour on battery; evaluate `PowerCreateRequest` for a readable reason string.

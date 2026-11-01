@@ -121,7 +121,7 @@ decides what the README must tell Windows laptop users.
 
 ### 7c. AI-agent detection (new in 0.2)
 Install Claude Code on the PC if it isn't already (`claude --version`). Then:
-1. `claude agents --json` in a terminal — record whether it works on Windows at all (undocumented) and paste the output shape.
+1. `claude agents --json` in a terminal. (Already confirmed on GitHub's Windows runner with Claude Code 2.1.316 — exit 0, JSON array — via `scripts/probe_claude_agents.py`; re-check on the real PC and note the version.)
 2. With Awake running and agent detection on, give a Claude Code session a task that takes > 1 minute. Within ~20 s the
    dashboard should read "Auto · Claude Code working" and `powercfg /requests` should list Awake under SYSTEM.
 3. When the task finishes, Awake should release about 60 s later (log `event=agent_hold_released reason=idle`).
