@@ -32,6 +32,13 @@ class DurationSelector(QWidget):
             self._buttons[duration] = button
             layout.addWidget(button, 1)
 
+    def clear_selection(self) -> None:
+        """Show no duration as selected (e.g. while an AI agent, not a timer, keeps the system awake)."""
+        self._group.setExclusive(False)
+        for button in self._buttons.values():
+            button.setChecked(False)
+        self._group.setExclusive(True)
+
     def set_duration(self, duration: int | None) -> None:
         button = self._buttons.get(duration)
         if button is not None and not button.isChecked():

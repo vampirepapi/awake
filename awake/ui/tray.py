@@ -111,6 +111,12 @@ class TrayController(QObject):
             self.duration_group.addAction(action)
             self.duration_actions[duration] = action
             m.addAction(action)
+        # Shown (checked, not clickable) while an AI agent alone keeps the system awake.
+        self.ai_mode_action = QAction("AI mode — automatic", m, checkable=True)
+        self.ai_mode_action.setEnabled(False)
+        self.ai_mode_action.setVisible(False)
+        self.duration_group.addAction(self.ai_mode_action)
+        m.addAction(self.ai_mode_action)
         m.addSeparator()
 
         self.system_action = QAction("Keep system awake", m, checkable=True)
@@ -142,9 +148,10 @@ class TrayController(QObject):
         session = self._state.active_session
         now = self._state.sessions.now()
         agent_status = agent_text.short_status(self._agents.activity if self._agents is not None else None)
-        if session is None and agent_status is not None:
-            status = f"Awake is ON · {agent_status}"
-            tooltip = f"{APP_NAME} — on, {agent_status}"
+        ai_mode = session is None and agent_status is not None
+        if ai_mode:
+            status = f"Awake is ON · AI mode · {agent_status}"
+            tooltip = f"{APP_NAME} — AI mode, {agent_status}"
         elif session is None:
             status = "Awake is OFF"
             tooltip = f"{APP_NAME} — off"
@@ -159,9 +166,13 @@ class TrayController(QObject):
         self.toggle_action.setText("Stop Awake" if session else "Start Awake")
         self.tray.setToolTip(tooltip)
 
-        selected = self._state.selected_duration
-        for duration, action in self.duration_actions.items():
-            action.setChecked(duration == selected)
+        self.ai_mode_action.setVisible(ai_mode)
+        if ai_mode:
+            self.ai_mode_action.setChecked(True)   # exclusive group: clears the duration checkmark
+        else:
+            selected = self._state.selected_duration
+            for duration, action in self.duration_actions.items():
+                action.setChecked(duration == selected)
         self.system_action.setChecked(self._state.keep_system)
         self.display_action.setChecked(self._state.keep_display)
         self.agents_action.setChecked(bool(self._state.settings.get("agent_detection_enabled")))

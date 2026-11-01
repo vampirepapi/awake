@@ -19,9 +19,10 @@ def describe(activity: AgentActivity | None) -> str:
         return "While Claude Code is working."
     match activity.state:
         case AgentHoldState.HOLDING:
-            return f"{who_is_working(activity)} working now."
+            busy = len(activity.busy)
+            return "Claude Code is working." if busy <= 1 else f"{busy} sessions working."
         case AgentHoldState.GRACE:
-            return "Just finished — sleeping normally soon."
+            return "Finished — sleeping soon."
         case AgentHoldState.LOW_BATTERY:
             return f"Paused: battery below {DEFAULT_BATTERY_FLOOR:.0f}%."
         case AgentHoldState.CAPPED:

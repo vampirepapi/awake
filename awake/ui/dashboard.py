@@ -56,13 +56,21 @@ class HeroCard(Card):
         title_row.addStretch(1)
         self.body.addLayout(title_row)
         self.body.addSpacing(4)
-        self.description = label("Your system can sleep normally.", "body")
+        self.description = label("Your system can sleep normally.", "body", wrap=True)
         self.description.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.body.addWidget(self.description)
         self.body.addSpacing(28)
 
-        duration_label = label("DURATION", "section")
-        self.body.addWidget(duration_label)
+        duration_row = QHBoxLayout()
+        duration_row.setSpacing(8)
+        duration_row.addWidget(label("DURATION", "section"))
+        duration_row.addStretch(1)
+        self.ai_badge = label("AI mode")
+        self.ai_badge.setProperty("badge", "active")
+        self.ai_badge.setToolTip("An AI agent is keeping the system awake. Pick a duration to also start a manual session.")
+        self.ai_badge.hide()
+        duration_row.addWidget(self.ai_badge)
+        self.body.addLayout(duration_row)
         self.body.addSpacing(8)
         self.durations = DurationSelector()
         self.body.addWidget(self.durations)
@@ -77,7 +85,7 @@ class HeroCard(Card):
         if active:
             self.description.setText("Your system will stay awake.")
         elif agent_status is not None:
-            self.description.setText(f"{agent_status} — staying awake automatically.")
+            self.description.setText("AI mode: staying awake while Claude Code works.")
         else:
             self.description.setText("Your system can sleep normally.")
 
@@ -195,6 +203,7 @@ class Dashboard(QWidget):
         self._state = state
         self._repo = sessions_repo
         self._agents = agents
+        self._picked_during_ai = False  # user chose a duration while in AI mode
 
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 28, 32, 28)
@@ -226,7 +235,7 @@ class Dashboard(QWidget):
         self._tick.timeout.connect(self._refresh_time)
 
         self.hero.button.clicked.connect(self._on_power_clicked)
-        self.hero.durations.duration_selected.connect(state.select_duration)
+        self.hero.durations.duration_selected.connect(self._on_duration_picked)
         self.controls.system.toggled.connect(state.set_keep_system)
         self.controls.display.toggled.connect(state.set_keep_display)
         self.recent.view_all_requested.connect(self.view_all_requested)
@@ -257,8 +266,28 @@ class Dashboard(QWidget):
         self._sync_session()
         self.reload_recent()
 
+    def _ai_mode(self) -> bool:
+        """An agent, not a manual session, is what keeps the system awake right now."""
+        activity = self._agents.activity if self._agents is not None else None
+        return self._state.active_session is None and agent_text.short_status(activity) is not None
+
+    def _on_duration_picked(self, duration: int | None) -> None:
+        if self._ai_mode():
+            self._picked_during_ai = True
+        self._state.select_duration(duration)
+
+    def _sync_duration_display(self) -> None:
+        ai_mode = self._ai_mode()
+        if not ai_mode:
+            self._picked_during_ai = False
+        self.hero.ai_badge.setVisible(ai_mode)
+        if ai_mode and not self._picked_during_ai:
+            self.hero.durations.clear_selection()
+        else:
+            self.hero.durations.set_duration(self._state.selected_duration)
+
     def _sync_selection(self) -> None:
-        self.hero.durations.set_duration(self._state.selected_duration)
+        self._sync_duration_display()
         self.controls.system.set_checked(self._state.keep_system)
         self.controls.display.set_checked(self._state.keep_display)
         self.controls.agents.set_checked(self._state.settings.get("agent_detection_enabled"))
@@ -277,12 +306,13 @@ class Dashboard(QWidget):
         self.controls.agents.description.setText(agent_text.describe(activity))
         self.controls.agents.tile.set_active(agent_status is not None
                                              or self._state.settings.get("agent_detection_enabled"))
+        self._sync_duration_display()
         if active:
             left = "running indefinitely" if session.is_indefinite else \
                 f"{format_duration(session.remaining_seconds(self._state.sessions.now()))} left"
             self.pill.set_active(True, f"Active · {left}")
         elif agent_status is not None:
-            self.pill.set_active(True, f"Auto · {agent_status}")
+            self.pill.set_active(True, f"AI mode · {agent_status}")
         else:
             self.pill.set_active(False, "Idle")
         self._refresh_time()

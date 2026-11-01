@@ -205,7 +205,8 @@ class MainWindow(QWidget):
         if session is None:
             agent_status = agent_text.short_status(self._agents.activity if self._agents else None)
             self.sidebar.status_dot.set_active(agent_status is not None)
-            self.sidebar.status_text.setText(f"On · {agent_status}" if agent_status else "Awake is off")
+            self.sidebar.status_text.setText("On · AI mode" if agent_status else "Awake is off")
+            self.sidebar.status_text.setToolTip(agent_status or "")
             self._status_timer.stop()
             return
         self.sidebar.status_dot.set_active(True)
