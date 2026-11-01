@@ -1,0 +1,57 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Test & package (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          python -m venv .venv
+          .venv\Scripts\python -m pip install --upgrade pip
+          .venv\Scripts\python -m pip install -r requirements-dev.txt
+
+      - name: Unit tests
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv\Scripts\python -m pytest -q -m "not native"
+
+      - name: Native SetThreadExecutionState tests
+        shell: cmd
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv\Scripts\python -m pytest -q -m native -v
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build Awake.exe and installer
+        shell: cmd
+        run: scripts\build_windows.bat
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Awake-Windows-x64
+          path: |
+            dist/Awake/**
+            dist/*-Setup.exe
+          if-no-files-found: error

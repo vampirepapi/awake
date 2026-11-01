@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8
+pyinstaller>=6.6
+psutil>=5.9   # performance measurement script only (scripts/measure_performance.py)

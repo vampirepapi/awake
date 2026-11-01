@@ -1,0 +1,52 @@
+name: macOS build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Test & package (macOS ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14   # Apple silicon
+            arch: arm64
+          - runner: macos-15-intel   # Intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements-dev.txt
+
+      - name: Unit tests
+        run: .venv/bin/python -m pytest -q -m "not native"
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Native IOKit tests (real power assertions)
+        run: .venv/bin/python -m pytest -q -m native -v
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Build Awake.app and DMG
+        run: scripts/build_macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Awake-macOS-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error

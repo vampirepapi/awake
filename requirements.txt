@@ -1,0 +1,2 @@
+# Runtime dependencies (the only thing bundled into the app)
+PySide6-Essentials>=6.7,<7
