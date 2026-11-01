@@ -3,9 +3,9 @@ name: macOS build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:   # used by release.yml
 
 jobs:
   build:
@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14   # Apple silicon
+          - runner: macos-14         # Apple silicon
             arch: arm64
           - runner: macos-15-intel   # Intel
             arch: x86_64
@@ -38,7 +38,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
 
       - name: Native IOKit tests (real power assertions)
-        run: .venv/bin/python -m pytest -q -m native -v
+        run: .venv/bin/python -m pytest -m native -v -rs
         env:
           QT_QPA_PLATFORM: offscreen
 

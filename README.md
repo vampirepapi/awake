@@ -12,6 +12,15 @@ macOS and Windows, one Python codebase, fully offline, no account, no telemetry.
 |---|---|---|
 | ![Sessions](docs/screenshots/sessions.png) | ![Settings](docs/screenshots/settings.png) | ![Light](docs/screenshots/home_on_light.png) |
 
+## Download
+
+Get the latest build from **[Releases](https://github.com/vampirepapi/awake/releases/latest)**:
+
+- macOS: `…-macOS-arm64.dmg` (Apple silicon) or `…-macOS-x86_64.dmg` (Intel)
+- Windows 10/11: `…-Setup.exe` (installer, no admin rights needed) or `…-Windows-x64-portable.zip`
+
+Builds are not code-signed yet, so macOS and Windows warn on first launch. The release notes explain how to open them.
+
 ## Features (v0.1)
 
 - **One-click power button** — only turns on after the operating system confirms the power request.
@@ -28,9 +37,9 @@ Honest status of what has been verified, and how:
 
 | Area | macOS (Apple silicon, macOS 26.5) | Windows 10/11 |
 |---|---|---|
-| Automated tests | ✅ 78 mocked + 2 native IOKit tests pass | ⏳ 78 mocked + 2 native tests in the Windows CI workflow, **not yet run** |
-| Native power API on real OS | ✅ `pmset -g assertions` shows `PreventUserIdleSystemSleep named: "Awake"`; no display assertion unless enabled; released on stop, quit, SIGTERM and `kill -9` | ❌ **Not verified on Windows hardware.** `tests/test_native_windows.py` + `powercfg /requests` checks run in the Windows CI workflow |
-| Packaged app | ✅ `Awake.app` + DMG built and launched; session, single-instance handoff, AppleScript (Cmd+Q path) quit, and Dock hiding (`lsappinfo`: `UIElement` while in the menu bar, `Foreground` with the window open) verified | ❌ Not built yet (must be built on Windows — see below) |
+| Automated tests | ✅ 78 mocked + 2 native IOKit tests pass | ✅ 78 mocked tests pass on GitHub's Windows runner |
+| Native power API on real OS | ✅ `pmset -g assertions` shows `PreventUserIdleSystemSleep named: "Awake"`; no display assertion unless enabled; released on stop, quit, SIGTERM and `kill -9` | ⚠️ Real `SetThreadExecutionState` calls succeed on GitHub's Windows runner (`tests/test_native_windows.py`, with `powercfg /requests` confirmation). **Not yet tested by hand on a Windows 10/11 PC** |
+| Packaged app | ✅ `Awake.app` + DMG built and launched; session, single-instance handoff, AppleScript (Cmd+Q path) quit, and Dock hiding (`lsappinfo`: `UIElement` while in the menu bar, `Foreground` with the window open) verified | ⚠️ `Awake.exe` and `Awake-0.1.0-Setup.exe` are built by CI; not yet launched on a Windows desktop |
 | Menu bar / tray | ✅ Tray icon created (`tray_shown available=True`); menu logic covered by offscreen tests. Clicking through the real menu bar was **not** automated | ❌ Not verified |
 | Notifications | ⚠️ Implemented via `QSystemTrayIcon.showMessage`; not visually confirmed | ❌ Not verified |
 | Launch at startup | ⚠️ LaunchAgent plist generation unit-tested; a real login cycle was not performed | ⚠️ Run-key logic unit-tested with a fake registry |
@@ -76,7 +85,15 @@ Each platform must be built on that platform — PyInstaller does not cross-comp
 | macOS | `scripts/build_macos.sh` | `dist/Awake.app`, `dist/Awake-0.1.0-macOS-<arch>.dmg` |
 | Windows | `scripts\build_windows.bat` | `dist\Awake\Awake.exe`, `dist\Awake-0.1.0-Setup.exe` (with [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
 
-GitHub Actions (`.github/workflows/build-macos.yml`, `build-windows.yml`) run the tests, the native power tests and the packaging on each platform and upload the installers as artifacts.
+GitHub Actions (`.github/workflows/build-macos.yml`, `build-windows.yml`) run the tests, the native power tests and the packaging on each platform for every push.
+
+To publish a release, bump `__version__` in `awake/__init__.py`, commit, then tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` checks the tag matches the version, builds macOS (arm64 + Intel) and Windows, and publishes a GitHub Release with the DMGs, the Windows installer, a portable zip and `SHA256SUMS.txt`, using `packaging/RELEASE_NOTES.md` as the description.
 
 Release builds need code signing and notarization — see [docs/RELEASING.md](docs/RELEASING.md).
 

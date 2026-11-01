@@ -3,9 +3,9 @@ name: Windows build
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:   # used by release.yml
 
 jobs:
   build:
@@ -31,11 +31,11 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: .venv\Scripts\python -m pytest -q -m "not native"
 
-      - name: Native SetThreadExecutionState tests
+      - name: Native SetThreadExecutionState tests (checked with powercfg)
         shell: cmd
         env:
           QT_QPA_PLATFORM: offscreen
-        run: .venv\Scripts\python -m pytest -q -m native -v
+        run: .venv\Scripts\python -m pytest -m native -v -rs
 
       - name: Install Inno Setup
         shell: pwsh
@@ -48,10 +48,17 @@ jobs:
         shell: cmd
         run: scripts\build_windows.bat
 
+      - name: Zip portable build
+        shell: pwsh
+        run: |
+          $version = .venv\Scripts\python -c "import awake; print(awake.__version__)"
+          Compress-Archive -Path dist\Awake -DestinationPath "dist\Awake-$version-Windows-x64-portable.zip"
+          if (-not (Test-Path "dist\Awake-$version-Setup.exe")) { throw "Installer was not built" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: Awake-Windows-x64
           path: |
-            dist/Awake/**
             dist/*-Setup.exe
+            dist/*-portable.zip
           if-no-files-found: error

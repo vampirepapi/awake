@@ -1,0 +1,59 @@
+name: Release
+
+# Push a version tag to build every platform and publish a GitHub Release:
+#   git tag v0.1.0 && git push origin v0.1.0
+# The tag must match __version__ in awake/__init__.py.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    name: Check tag matches app version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare tag and __version__
+        run: |
+          version=$(python3 -c "import awake; print(awake.__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match awake.__version__ ($version)"
+            exit 1
+          fi
+
+  macos:
+    needs: check-version
+    uses: ./.github/workflows/build-macos.yml
+
+  windows:
+    needs: check-version
+    uses: ./.github/workflows/build-windows.yml
+
+  publish:
+    name: Publish GitHub Release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la release
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --title "Awake ${GITHUB_REF_NAME#v}" \
+            --notes-file packaging/RELEASE_NOTES.md \
+            --verify-tag
