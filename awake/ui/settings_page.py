@@ -227,7 +227,7 @@ class SettingsPage(QWidget):
         self.cursor_button.setProperty("variant", "" if connected else "primary")
         repolish(self.cursor_button)
         self.cursor_description.setText(
-            "Connected through a Cursor hook. Restart Cursor once if it isn't detected." if connected else
+            "Connected through a Cursor hook. If Cursor isn't detected, restart it once." if connected else
             "Needs a one-time connection: Awake adds a small hook to Cursor's settings (you'll see it first)."
         )
 
@@ -250,7 +250,8 @@ class SettingsPage(QWidget):
         box.exec()
         if box.clickedButton() is connect:
             self._run_cursor_action(self._cursor_hooks.install, "Cursor connected.",
-                                    "Restart Cursor so it loads the hook. Awake will then detect its agent.")
+                                    "Awake will detect Cursor's agent from its next prompt. "
+                                    "If it doesn't, restart Cursor once.")
 
     def _run_cursor_action(self, action, title: str, message: str) -> None:  # noqa: ANN001
         try:

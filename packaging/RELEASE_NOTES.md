@@ -1,6 +1,14 @@
 Awake keeps your computer from going to sleep while you work: one click, for 30 minutes, 1 hour, 2 hours or until you stop it. The display can still turn off. It lives in the menu bar / system tray, works offline and collects nothing.
 
-## What's new in 0.2.0
+## What's new in 0.3.0
+
+- **AI mode now also covers Codex and Cursor.**
+  - **Codex** (CLI and IDE extension): detected automatically from its session log — no setup. Awake reads only whether a turn is running, never the conversation.
+  - **Cursor**: one click in Settings › AI agents › Cursor › Connect. Awake shows exactly what it adds to Cursor's hooks first, keeps your existing hooks, backs the file up, and can remove it again. The hook records only whether a chat is busy — never your prompt. Restart Cursor once after connecting.
+- Mixed agents are handled together ("AI mode · Claude Code + Codex working").
+- Status: Claude Code verified live; Codex and Cursor verified against their official formats and with end-to-end simulations, but not yet with real accounts — reports welcome.
+
+## Earlier: 0.2.0
 
 - **AI mode: stays awake while Claude Code works.** Awake notices when a Claude Code session is busy (using Claude Code's own `claude agents --json` status) and keeps the system awake until it finishes, then lets your computer sleep normally about a minute later. The display can still turn off.
   - Pauses on battery below 20 %, and stops after 4 hours of continuous work.

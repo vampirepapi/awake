@@ -51,7 +51,9 @@ awake/
 Implemented in 0.2 for Claude Code (`awake/core/agents/`); research and roadmap in [AGENT_DETECTION.md](AGENT_DETECTION.md).
 
 ```
-AgentMonitor (every 20 s; only runs `claude agents --json` while a Claude process exists)
+AgentMonitor (every 20 s) — Claude Code: `claude agents --json` while a Claude process exists (async)
+             — Codex: newest session files' turn events (only while a codex process exists)
+             — Cursor: state files written by Awake's opt-in Cursor hook (only while Cursor runs)
     │  AgentSnapshot: sessions with busy / waiting / idle
     ▼
 AgentCoordinator — grace 60 s, cap 4 h, battery guard (< 20 % on battery), error retry

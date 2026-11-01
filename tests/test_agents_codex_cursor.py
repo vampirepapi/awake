@@ -49,8 +49,8 @@ def rollout_line(payload_type: str, ordinal: int = 1, **extra: object) -> str:
                        "payload": {"type": payload_type, **extra}, "ordinal": ordinal})
 
 
-def write_rollout(home: Path, lines: list[str], name: str | None = None) -> Path:
-    now = time.localtime()
+def write_rollout(home: Path, lines: list[str], name: str | None = None, days_ago: int = 0) -> Path:
+    now = time.localtime(time.time() - days_ago * 86400)
     folder = home / "sessions" / time.strftime("%Y", now) / time.strftime("%m", now) / time.strftime("%d", now)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / (name or f"rollout-2025-01-05T12-00-00-{SESSION}.jsonl")
@@ -110,7 +110,7 @@ def test_codex_busy_requires_process_recent_file_and_open_turn(tmp_path) -> None
     sessions, status = source.read([proc(9, "zsh")])         # Codex not running (crashed / quit)
     assert sessions == [] and status.state is SourceState.NOT_RUNNING
 
-    old = time.time() - 31 * 60                               # open turn but file stale → crash left it open
+    old = time.time() - (2 * 3600 + 60)                       # open turn but file stale → crash left it open
     os.utime(path, (old, old))
     sessions, _ = source.read([CODEX_PROC])
     assert sessions == []
@@ -162,7 +162,8 @@ def test_install_merges_and_backs_up(tmp_path) -> None:
         ours = [e for e in config["hooks"][event] if HOOK_MARKER in e["command"]]
         assert len(ours) == 1 and ours[0]["timeout"] == 5
     assert "followup_message" not in hooks.script_file.read_text()          # never auto-submits chat
-    assert list(cursor_dir.glob("hooks.json.awake-backup-*"))
+    original = cursor_dir / "hooks.json.awake-original"
+    assert json.loads(original.read_text())["hooks"]["stop"] == [user_hook]   # pre-Awake file kept
     assert hooks.is_installed()
     hooks.install()                                                          # idempotent
     config = json.loads((cursor_dir / "hooks.json").read_text())
@@ -198,7 +199,8 @@ def test_windows_plan_is_inline_powershell(tmp_path) -> None:
     assert plan.script_file is None
     command = plan.entries["beforeSubmitPrompt"]["command"]
     assert HOOK_MARKER in command and "\n" not in command
-    assert "ConvertFrom-Json" in command and "'{\"continue\":true}'" in command
+    assert "ConvertFrom-Json" in command and "[char]34 + 'continue' + [char]34" in command
+    assert '"' not in command                                                 # nothing for a parser to strip
     assert "'C:\\Users\\it''s me\\Awake'" in command                         # PowerShell-escaped quote
     assert "prompt" not in windows_command("beforeSubmitPrompt", Path("C:/x"))
 
@@ -278,15 +280,42 @@ def test_any_busy_agent_holds_even_if_another_is_unreadable(qapp, backend, clock
     assert coordinator.activity.state is AgentHoldState.HOLDING and backend.system
 
 
-def test_unreadable_agent_with_nothing_busy_keeps_decision(qapp, backend, clock) -> None:
+def test_unreadable_agent_keeps_its_own_last_state(qapp, backend, clock) -> None:
+    """Codex was busy, then its status can't be read: a timeout is not 'idle' — keep holding."""
     coordinator = AgentCoordinator(PowerManager(backend), lambda: None, clock=clock)
-    coordinator.update(snap([AgentSession(AgentKind.CURSOR, "k", 0, AgentStatus.BUSY)],
-                            SourceStatus(AgentKind.CURSOR, SourceState.ACTIVE)))
-    coordinator.update(snap([], SourceStatus(AgentKind.CODEX, SourceState.UNAVAILABLE, "x"),
-                            SourceStatus(AgentKind.CURSOR, SourceState.ACTIVE)))
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)],
+                            SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)))
+    coordinator.update(snap([], SourceStatus(AgentKind.CODEX, SourceState.UNAVAILABLE, "x")))
     clock.advance(120)
     coordinator._grace_timer.check()
-    assert backend.system                                                     # unknown ≠ idle
+    assert backend.system and coordinator.activity.state is AgentHoldState.HOLDING
+
+
+def test_fresh_idle_reading_is_not_frozen_by_another_unreadable_agent(qapp, backend, clock) -> None:
+    """Review finding: Claude finished while Cursor was unreadable → must release, not hold 4 h."""
+    coordinator = AgentCoordinator(PowerManager(backend), lambda: None, clock=clock)
+    coordinator.update(snap([AgentSession(AgentKind.CLAUDE_CODE, "a", 1, AgentStatus.BUSY)],
+                            SourceStatus(AgentKind.CLAUDE_CODE, SourceState.ACTIVE)))
+    coordinator.update(snap([AgentSession(AgentKind.CLAUDE_CODE, "a", 1, AgentStatus.IDLE)],
+                            SourceStatus(AgentKind.CLAUDE_CODE, SourceState.ACTIVE),
+                            SourceStatus(AgentKind.CURSOR, SourceState.UNAVAILABLE, "x")))
+    assert coordinator.activity.state is AgentHoldState.GRACE
+    clock.advance(61)
+    coordinator._grace_timer.check()
+    assert not backend.system and coordinator.activity.state is AgentHoldState.IDLE
+
+
+def test_cap_not_reset_while_an_agent_is_unreadable(qapp, backend, clock) -> None:
+    coordinator = AgentCoordinator(PowerManager(backend), lambda: None, clock=clock)
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)],
+                            SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)))
+    clock.advance(4 * 3600)
+    coordinator._cap_timer.check()
+    coordinator.update(snap([], SourceStatus(AgentKind.CLAUDE_CODE, SourceState.ACTIVE),
+                            SourceStatus(AgentKind.CURSOR, SourceState.UNAVAILABLE, "x")))
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)],
+                            SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)))
+    assert coordinator.activity.state is AgentHoldState.CAPPED and not backend.system
 
 
 def test_wording_for_mixed_agents(qapp, backend, clock) -> None:
@@ -304,3 +333,112 @@ def test_wording_for_mixed_agents(qapp, backend, clock) -> None:
     assert agent_text.short_status(coordinator.activity) == "Claude Code + Cursor working"
     assert agent_text.hero_line(coordinator.activity) == "AI mode: staying awake while Claude Code + Cursor work."
     assert agent_text.describe(coordinator.activity) == "2 sessions working."
+
+
+def test_long_lived_session_from_an_older_day_folder_is_seen(tmp_path) -> None:
+    """Review finding: rollout files stay in the folder of the day the session started."""
+    source = CodexSource(home=tmp_path)
+    write_rollout(tmp_path, [rollout_line("task_started")], days_ago=10)    # written to now (resumed)
+    sessions, _ = source.read([CODEX_PROC])
+    assert sessions and sessions[0].is_busy
+
+
+def test_incremental_reads_follow_the_turn(tmp_path) -> None:
+    """Review finding: >1 MB of output after task_started must not read as 'unknown'."""
+    source = CodexSource(home=tmp_path)
+    path = write_rollout(tmp_path, [rollout_line("task_complete")])
+    assert not source.read([CODEX_PROC])[0][0].is_busy
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(rollout_line("task_started") + "\n")
+        for _ in range(8):                                                    # ~2.4 MB of tool output
+            fh.write(rollout_line("item_completed", output="y" * 300_000) + "\n")
+    sessions, status = source.read([CODEX_PROC])
+    assert status.state is SourceState.ACTIVE and sessions[0].is_busy
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(rollout_line("task_complete")[:20])                          # half-written line
+    assert source.read([CODEX_PROC])[0][0].is_busy                           # waits for the full line
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(rollout_line("task_complete")[20:] + "\n")
+    assert not source.read([CODEX_PROC])[0][0].is_busy
+
+
+@pytest.mark.parametrize("content", [
+    {"version": 1, "hooks": None},
+    {"version": 1, "hooks": []},
+    {"version": 1, "hooks": {"beforeSubmitPrompt": None}},
+    {"version": 1, "hooks": {"stop": "oops"}},
+    [1, 2, 3],
+])
+def test_odd_but_valid_hooks_files_never_crash(tmp_path, content) -> None:
+    """Review finding: these shapes crashed Awake at startup."""
+    cursor_dir = tmp_path / ".cursor"
+    cursor_dir.mkdir()
+    (cursor_dir / "hooks.json").write_text(json.dumps(content))
+    hooks = CursorHooks(cursor_dir=cursor_dir, state_dir=tmp_path / "state", platform="darwin")
+    assert hooks.is_installed() is False                                      # no exception
+    _, status = CursorSource(hooks).read([CURSOR_APP])
+    assert status.state is SourceState.NOT_CONNECTED
+    before = (cursor_dir / "hooks.json").read_text()
+    try:
+        hooks.install()
+    except HookConfigError:
+        assert (cursor_dir / "hooks.json").read_text() == before              # untouched …
+        assert not list(cursor_dir.glob("hooks.json.awake-*"))                # … and no backup written
+    else:
+        assert hooks.is_installed()                                           # null sections are fine
+
+
+def test_symlinked_hooks_file_stays_a_symlink(tmp_path) -> None:
+    cursor_dir = tmp_path / ".cursor"
+    cursor_dir.mkdir()
+    real = tmp_path / "dotfiles" / "hooks.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps({"version": 1, "hooks": {}}))
+    (cursor_dir / "hooks.json").symlink_to(real)
+    hooks = CursorHooks(cursor_dir=cursor_dir, state_dir=tmp_path / "state", platform="darwin")
+    hooks.install()
+    assert (cursor_dir / "hooks.json").is_symlink()
+    assert HOOK_MARKER in real.read_text()
+
+
+def test_original_backup_is_never_overwritten_and_created_file_is_removed(tmp_path) -> None:
+    cursor_dir = tmp_path / ".cursor"
+    hooks = CursorHooks(cursor_dir=cursor_dir, state_dir=tmp_path / "state", platform="darwin")
+    hooks.install()                                                           # no file existed before
+    hooks.install()
+    hooks.uninstall()
+    assert not (cursor_dir / "hooks.json").exists()                           # Awake leaves no trace
+    cursor_dir.mkdir(exist_ok=True)
+    (cursor_dir / "hooks.json").write_text('{"version": 1, "hooks": {"stop": [{"command": "mine"}]}}')
+    hooks.install()
+    hooks.install()
+    hooks.uninstall()
+    original = json.loads((cursor_dir / "hooks.json.awake-original").read_text())
+    assert original == {"version": 1, "hooks": {"stop": [{"command": "mine"}]}}
+
+
+def test_busy_left_by_a_crashed_cursor_is_ignored(tmp_path) -> None:
+    hooks = CursorHooks(cursor_dir=tmp_path / ".cursor", state_dir=tmp_path / "state", platform="darwin")
+    hooks.install()
+    (hooks.state_dir / "conv-old").write_text("busy 1\n")
+    earlier = time.time() - 600
+    os.utime(hooks.state_dir / "conv-old", (earlier, earlier))
+    restarted = ProcessInfo(70, 1, CURSOR_APP.cmdline, CURSOR_APP.exe, create_time=time.time() - 60)
+    sessions, _ = CursorSource(hooks).read([restarted])
+    assert [(s.session_id, s.status) for s in sessions] == [("conv-old", AgentStatus.IDLE)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell script")
+def test_hook_reads_event_from_stdin_and_session_end_by_session_id(tmp_path) -> None:
+    hooks = CursorHooks(cursor_dir=tmp_path / ".cursor", state_dir=tmp_path / "state", platform="darwin")
+    hooks.install()
+
+    def run(argv_event: str, payload: dict) -> str:
+        result = subprocess.run([str(hooks.script_file)] + ([argv_event] if argv_event else []),
+                                input=json.dumps(payload), capture_output=True, text=True, timeout=10)
+        return result.stdout.strip()
+
+    assert run("", {"hook_event_name": "beforeSubmitPrompt", "conversation_id": "c1"}) == '{"continue":true}'
+    assert (hooks.state_dir / "c1").read_text().startswith("busy")
+    assert run("", {"hook_event_name": "sessionEnd", "session_id": "c1"}) == "{}"
+    assert not (hooks.state_dir / "c1").exists()

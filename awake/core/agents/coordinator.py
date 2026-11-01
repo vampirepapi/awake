@@ -22,7 +22,7 @@ from enum import StrEnum
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from awake.core.agents.models import AgentSession, AgentSnapshot
+from awake.core.agents.models import AgentSession, AgentSnapshot, SourceState
 from awake.core.power_manager import PowerError, PowerManager
 from awake.core.timer_manager import Clock, TimerManager
 from awake.database.models import utcnow
@@ -130,13 +130,14 @@ class AgentCoordinator(QObject):
             return
         if not self._enabled:
             snapshot = AgentSnapshot()
-        elif snapshot.unknown and not snapshot.any_busy:
-            # Some running agent's status couldn't be read, and nothing is known to be
-            # busy: that proves nothing. Keep the current hold decision (still bounded
-            # by the cap and the grace timer) and only update what the UI shows.
-            self._snapshot = AgentSnapshot(self._snapshot.sessions, snapshot.sources, snapshot.taken_at)
-            self._emit_if_changed()
-            return
+        elif snapshot.unknown:
+            # An agent whose status couldn't be read keeps its *last known* sessions (a
+            # timeout is not "idle"); every other agent uses its fresh reading. Only the
+            # unreadable agent is frozen — never the others.
+            unreadable = {s.agent for s in snapshot.sources if s.state is SourceState.UNAVAILABLE}
+            carried = tuple(s for s in self._snapshot.sessions if s.agent in unreadable)
+            fresh = tuple(s for s in snapshot.sessions if s.agent not in unreadable)
+            snapshot = AgentSnapshot(fresh + carried, snapshot.sources, snapshot.taken_at)
         self._snapshot = snapshot
         self._evaluate()
 
@@ -159,7 +160,8 @@ class AgentCoordinator(QObject):
             return
         busy = self._snapshot.any_busy
         if not busy:
-            self._capped = False  # a successful reading with every agent idle → cap resets
+            if not self._snapshot.unknown:
+                self._capped = False  # every agent read successfully and idle → cap resets
             if self._holding and not self._grace_timer.is_running:
                 self._grace_timer.schedule(self._now_plus(self._grace))
                 log.info(kv("agent_grace_started", seconds=self._grace))

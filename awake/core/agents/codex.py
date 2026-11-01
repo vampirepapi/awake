@@ -12,9 +12,13 @@ with ``task_started`` (alias ``turn_started``) at the start of a turn and
 
 A session counts as busy only when all three hold:
 1. a Codex process is running,
-2. its rollout file was written within ``ACTIVE_WINDOW`` (guards against a crash
-   that left a turn open), and
+2. its rollout file was written within ``ACTIVE_WINDOW_SECONDS`` (guards against a
+   crash that left a turn open; long enough for a quiet multi-hour build), and
 3. the last lifecycle event in the file is a start.
+
+Rollout files stay in the folder of the day the session *started*, and resuming
+appends to the same file, so the last ``DISCOVERY_DAYS`` of folders are listed.
+Each file is read once from its tail, then incrementally (only new bytes).
 
 Privacy: these files contain the user's conversation. Only lines that contain a
 lifecycle marker are parsed, and only their ``type`` fields are used; nothing
@@ -38,9 +42,11 @@ from awake.logging_setup import kv
 
 log = logging.getLogger("awake.agents")
 
-ACTIVE_WINDOW_SECONDS = 30 * 60
+ACTIVE_WINDOW_SECONDS = 2 * 3600
+DISCOVERY_DAYS = 45
 CHUNK_BYTES = 256 * 1024
-MAX_SCAN_BYTES = 1024 * 1024  # a single command-output line can be up to 64 KiB (and more before truncation)
+FIRST_SCAN_MAX_BYTES = 32 * 1024 * 1024   # first look at a file: search its tail this far back
+INCREMENT_MAX_BYTES = 16 * 1024 * 1024    # per poll; beyond this, fall back to a tail scan
 
 _STARTED = {"task_started", "turn_started"}
 _ENDED = {"task_complete", "turn_complete", "turn_aborted"}
@@ -71,7 +77,7 @@ def is_codex_process(proc: ProcessInfo) -> bool:
     return False
 
 
-def last_turn_event(path: Path) -> str | None:
+def last_turn_event(path: Path, max_bytes: int = FIRST_SCAN_MAX_BYTES) -> str | None:
     """``"started"``, ``"ended"`` or ``None`` (no lifecycle event in the scanned tail)."""
     with path.open("rb") as fh:
         fh.seek(0, os.SEEK_END)
@@ -79,7 +85,7 @@ def last_turn_event(path: Path) -> str | None:
         end = size
         carry = b""
         scanned = 0
-        while end > 0 and scanned < MAX_SCAN_BYTES:
+        while end > 0 and scanned < max_bytes:
             start = max(0, end - CHUNK_BYTES)
             fh.seek(start)
             block = fh.read(end - start) + carry
@@ -116,11 +122,20 @@ def _lifecycle(raw: bytes) -> str | None:
     return None  # the marker text appeared inside some other content
 
 
+def _last_event_in(data: bytes) -> str | None:
+    """Last lifecycle event in a block of complete lines, scanning forward."""
+    event = None
+    for raw in data.split(b"\n"):
+        found = _lifecycle(raw)
+        if found is not None:
+            event = found
+    return event
+
+
 @dataclass
-class _CacheEntry:
-    mtime_ns: int
-    size: int
-    event: str | None
+class _FileState:
+    offset: int          # bytes consumed (always at a line boundary)
+    event: str | None    # last lifecycle event seen so far
 
 
 class CodexSource:
@@ -129,19 +144,19 @@ class CodexSource:
     def __init__(self, home: Path | None = None, clock=time.time) -> None:  # noqa: ANN001
         self._home = home
         self._clock = clock
-        self._cache: dict[Path, _CacheEntry] = {}
+        self._files: dict[Path, _FileState] = {}
 
     @property
     def sessions_dir(self) -> Path:
         return (self._home or codex_home()) / "sessions"
 
     def recent_rollouts(self) -> list[Path]:
-        """Rollout files written within the active window. Only today's/yesterday's folders are listed."""
+        """Rollout files written within the active window, from the last ``DISCOVERY_DAYS`` of folders."""
         root = self.sessions_dir
         now = self._clock()
         folders = {root}
         for moment in (datetime.fromtimestamp(now), datetime.fromtimestamp(now, timezone.utc)):
-            for days in (0, 1):
+            for days in range(DISCOVERY_DAYS + 1):
                 day = moment - timedelta(days=days)
                 folders.add(root / f"{day:%Y}" / f"{day:%m}" / f"{day:%d}")
         recent: list[Path] = []
@@ -160,9 +175,33 @@ class CodexSource:
                     continue
         return recent
 
+    def _update(self, path: Path) -> str | None:
+        """Bring the cached state of one file up to date; return its last lifecycle event."""
+        size = path.stat().st_size
+        state = self._files.get(path)
+        if state is None or size < state.offset:
+            # First sight (or the file was rewritten): find the last event from the tail.
+            state = _FileState(offset=size, event=last_turn_event(path))
+            self._files[path] = state
+            return state.event
+        if size == state.offset:
+            return state.event
+        if size - state.offset > INCREMENT_MAX_BYTES:
+            state.event = last_turn_event(path) or state.event
+            state.offset = size
+            return state.event
+        with path.open("rb") as fh:
+            fh.seek(state.offset)
+            data = fh.read(size - state.offset)
+        complete = data.rfind(b"\n") + 1          # only consume whole lines; a partial line waits
+        if complete:
+            state.event = _last_event_in(data[:complete]) or state.event
+            state.offset += complete
+        return state.event
+
     def read(self, processes: list[ProcessInfo]) -> tuple[list[AgentSession], SourceStatus]:
         if not any(is_codex_process(p) for p in processes):
-            self._cache.clear()
+            self._files.clear()
             return [], SourceStatus(AgentKind.CODEX, SourceState.NOT_RUNNING)
         sessions: list[AgentSession] = []
         unreadable = False
@@ -170,26 +209,17 @@ class CodexSource:
         for path in self.recent_rollouts():
             live.add(path)
             try:
-                stat = path.stat()
-                cached = self._cache.get(path)
-                if cached and (cached.mtime_ns, cached.size) == (stat.st_mtime_ns, stat.st_size):
-                    event = cached.event
-                else:
-                    event = last_turn_event(path)
-                    self._cache[path] = _CacheEntry(stat.st_mtime_ns, stat.st_size, event)
+                event = self._update(path)
             except OSError as exc:
                 log.warning(kv("codex_rollout_unreadable", error=type(exc).__name__))
                 unreadable = True
-                continue
-            if event is None and stat.st_size > MAX_SCAN_BYTES:
-                unreadable = True  # a huge tail with no lifecycle event: unknown, not idle
                 continue
             match = _SESSION_ID_RE.search(path.name)
             session_id = match.group(1) if match else path.stem
             status = AgentStatus.BUSY if event == "started" else AgentStatus.IDLE
             sessions.append(AgentSession(AgentKind.CODEX, session_id, 0, status))
-        for stale in set(self._cache) - live:
-            del self._cache[stale]
+        for stale in set(self._files) - live:
+            del self._files[stale]
         if unreadable and not any(s.is_busy for s in sessions):
             return sessions, SourceStatus(AgentKind.CODEX, SourceState.UNAVAILABLE,
                                           "Couldn't read Codex's session status.")

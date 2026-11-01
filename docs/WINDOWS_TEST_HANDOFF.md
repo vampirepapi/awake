@@ -127,6 +127,13 @@ Install Claude Code on the PC if it isn't already (`claude --version`). Then:
 3. When the task finishes, Awake should release about 60 s later (log `event=agent_hold_released reason=idle`).
 4. Turn "Keep awake for AI agents" off mid-task → released immediately.
 
+### 7d. Codex and Cursor in AI mode (new in 0.3)
+- Codex: run a Codex CLI task > 1 minute → Awake shows "Codex working" within ~20 s; releases ~60 s after it finishes.
+  Session files are under `%USERPROFILE%\.codex\sessions\…`.
+- Cursor: Settings › AI agents › Cursor › Connect, restart Cursor, run an agent task. **The Windows hook is inline
+  PowerShell and has never run** — check `%USERPROFILE%\.cursor\hooks.json`, that prompts still submit normally, and
+  that `%APPDATA%\Awake\agent-state\cursor\` gets a file containing only `busy …`/`idle …`.
+
 ### 8. Performance
 With a session active and the window hidden:
 ```powershell
