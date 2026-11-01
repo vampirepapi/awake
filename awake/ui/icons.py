@@ -155,11 +155,11 @@ def _label_font(pixel_size: int) -> QFont:
 
 def _labelled_image(color: QColor, height: int, label: str | None, infinite: bool) -> QImage:
     """Sun glyph followed by a time label or an infinity glyph, ``height`` px tall."""
-    gap = round(height * 0.2)
-    font = _label_font(round(height * 0.66))
+    gap = round(height * 0.18)
+    font = _label_font(round(height * 0.75))
     metrics = QFontMetricsF(font)
     if infinite:
-        trailing = height * 0.9
+        trailing = height * 1.0
     else:
         trailing = metrics.horizontalAdvance(label or "")
     width = int(height + gap + trailing + 1)
@@ -172,7 +172,7 @@ def _labelled_image(color: QColor, height: int, label: str | None, infinite: boo
     p.drawImage(0, 0, _glyph_image("sun", color, height, filled=True))
     x = height + gap
     if infinite:
-        render_icon(p, "infinity", QRectF(x, (height - trailing) / 2, trailing, trailing), color, stroke_width=2.4)
+        render_icon(p, "infinity", QRectF(x, (height - trailing) / 2, trailing, trailing), color, stroke_width=2.8)
     else:
         p.setFont(font)
         p.setPen(color)
@@ -191,8 +191,8 @@ def _glyph_image(name: str, color: QColor, size: int, filled: bool) -> QImage:
         # Solid core so the active state reads clearly even in monochrome.
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(color)
-        core = size * 0.30
+        core = size * 0.36
         p.drawEllipse(QRectF(size / 2 - core / 2, size / 2 - core / 2, core, core))
-    render_icon(p, name, QRectF(0, 0, size, size), color, stroke_width=2.25)
+    render_icon(p, name, QRectF(0, 0, size, size), color, stroke_width=2.6)
     p.end()
     return image
