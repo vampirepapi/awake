@@ -37,6 +37,25 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: .venv\Scripts\python -m pytest -m native -v -rs
 
+      - name: Probe Claude Code agent detection (informational)
+        # Does `claude agents --json` work on Windows, and does Awake's process matching
+        # recognise a running claude.exe? Reports only; never fails the build.
+        shell: pwsh
+        continue-on-error: true
+        env:
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: |
+          irm https://claude.ai/install.ps1 | iex
+          $claude = "$env:USERPROFILE\.local\bin\claude.exe"
+          $proc = $null
+          if (Test-Path $claude) {
+            # Best effort: a live claude.exe lets the probe exercise process matching.
+            $proc = Start-Process -FilePath $claude -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 5
+          }
+          .venv\Scripts\python scripts\probe_claude_agents.py
+          if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
