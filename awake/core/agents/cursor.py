@@ -75,7 +75,7 @@ SH_SCRIPT = r"""#!/bin/sh
 # Remove it from Awake › Settings › AI agents › Cursor › Disconnect.
 payload=$(cat 2>/dev/null | tr -d '\n\r')
 field() { printf '%s' "$payload" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([A-Za-z0-9_-]*\)\".*/\1/p"; }
-event=$(field hook_event_name); [ -n "$event" ] || event="$1"
+event="$1"; [ -n "$event" ] || event=$(field hook_event_name)
 id=$(field conversation_id); [ -n "$id" ] || id=$(field session_id)
 dir=__STATE_DIR__
 if [ -n "$id" ]; then
@@ -268,8 +268,9 @@ class CursorHooks:
             return {"version": 1, "hooks": {}}
         try:
             data = json.loads(self.hooks_file.read_text(encoding="utf-8") or "{}")
-        except (OSError, json.JSONDecodeError) as exc:
-            raise HookConfigError(f"Cursor's hooks.json isn't valid JSON ({exc}); Awake won't change it.") from exc
+        except (OSError, ValueError) as exc:  # ValueError covers JSON and text-encoding errors
+            raise HookConfigError(f"Cursor's hooks.json couldn't be read as JSON ({exc}); "
+                                  "Awake won't change it.") from exc
         if not isinstance(data, dict):
             raise HookConfigError("Cursor's hooks.json has an unexpected format; Awake won't change it.")
         return data

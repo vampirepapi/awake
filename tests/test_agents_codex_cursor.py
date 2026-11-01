@@ -138,7 +138,7 @@ def test_codex_unchanged_files_are_not_reread(tmp_path, monkeypatch) -> None:
     write_rollout(tmp_path, [rollout_line("task_started")])
     calls = []
     real = codex_module.last_turn_event
-    monkeypatch.setattr(codex_module, "last_turn_event", lambda p: calls.append(p) or real(p))
+    monkeypatch.setattr(codex_module, "last_turn_event", lambda p, **kw: calls.append(p) or real(p, **kw))
     source.read([CODEX_PROC])
     source.read([CODEX_PROC])
     assert len(calls) == 1
@@ -305,17 +305,30 @@ def test_fresh_idle_reading_is_not_frozen_by_another_unreadable_agent(qapp, back
     assert not backend.system and coordinator.activity.state is AgentHoldState.IDLE
 
 
-def test_cap_not_reset_while_an_agent_is_unreadable(qapp, backend, clock) -> None:
+def test_cap_kept_while_an_unreadable_agent_was_last_seen_busy(qapp, backend, clock) -> None:
     coordinator = AgentCoordinator(PowerManager(backend), lambda: None, clock=clock)
     coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)],
                             SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)))
     clock.advance(4 * 3600)
     coordinator._cap_timer.check()
-    coordinator.update(snap([], SourceStatus(AgentKind.CLAUDE_CODE, SourceState.ACTIVE),
-                            SourceStatus(AgentKind.CURSOR, SourceState.UNAVAILABLE, "x")))
+    coordinator.update(snap([], SourceStatus(AgentKind.CODEX, SourceState.UNAVAILABLE, "x")))  # still "busy"
     coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)],
                             SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)))
     assert coordinator.activity.state is AgentHoldState.CAPPED and not backend.system
+
+
+def test_outdated_claude_does_not_keep_ai_mode_off_for_others(qapp, backend, clock) -> None:
+    """Review finding A: a permanently unreadable Claude Code must not make CAPPED stick."""
+    coordinator = AgentCoordinator(PowerManager(backend), lambda: None, clock=clock)
+    old_claude = SourceStatus(AgentKind.CLAUDE_CODE, SourceState.UNAVAILABLE, "Update Claude Code to enable this.")
+    codex_ok = SourceStatus(AgentKind.CODEX, SourceState.ACTIVE)
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)], old_claude, codex_ok))
+    clock.advance(4 * 3600)
+    coordinator._cap_timer.check()
+    assert coordinator.activity.state is AgentHoldState.CAPPED
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.IDLE)], old_claude, codex_ok))
+    coordinator.update(snap([AgentSession(AgentKind.CODEX, "c", 0, AgentStatus.BUSY)], old_claude, codex_ok))
+    assert coordinator.activity.state is AgentHoldState.HOLDING and backend.system
 
 
 def test_wording_for_mixed_agents(qapp, backend, clock) -> None:
@@ -442,3 +455,39 @@ def test_hook_reads_event_from_stdin_and_session_end_by_session_id(tmp_path) -> 
     assert (hooks.state_dir / "c1").read_text().startswith("busy")
     assert run("", {"hook_event_name": "sessionEnd", "session_id": "c1"}) == "{}"
     assert not (hooks.state_dir / "c1").exists()
+
+
+def test_first_read_during_a_half_written_line_does_not_lose_the_turn_end(tmp_path) -> None:
+    """Review finding B: first sight mid-write must resume at the line boundary."""
+    source = CodexSource(home=tmp_path)
+    end_line = rollout_line("task_complete")
+    path = write_rollout(tmp_path, [rollout_line("task_started")])
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(end_line[:25])                                               # Codex mid-write
+    assert source.read([CODEX_PROC])[0][0].is_busy
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(end_line[25:] + "\n")
+    assert not source.read([CODEX_PROC])[0][0].is_busy
+
+
+def test_non_utf8_hooks_file_never_crashes(tmp_path) -> None:
+    """Review finding C: a hooks.json saved in a legacy encoding stopped Awake from starting."""
+    cursor_dir = tmp_path / ".cursor"
+    cursor_dir.mkdir()
+    (cursor_dir / "hooks.json").write_bytes('{"version": 1, "note": "José"}'.encode("latin-1"))
+    hooks = CursorHooks(cursor_dir=cursor_dir, state_dir=tmp_path / "state", platform="darwin")
+    assert hooks.is_installed() is False
+    with pytest.raises(HookConfigError):
+        hooks.install()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell script")
+def test_hook_prefers_the_event_awake_put_in_the_command(tmp_path) -> None:
+    """Review finding D: an unexpected hook_event_name spelling must not break the reply."""
+    hooks = CursorHooks(cursor_dir=tmp_path / ".cursor", state_dir=tmp_path / "state", platform="darwin")
+    hooks.install()
+    result = subprocess.run([str(hooks.script_file), "beforeSubmitPrompt"],
+                            input=json.dumps({"hook_event_name": "before_submit_prompt", "conversation_id": "c9"}),
+                            capture_output=True, text=True, timeout=10)
+    assert result.stdout.strip() == '{"continue":true}'
+    assert (hooks.state_dir / "c9").read_text().startswith("busy")

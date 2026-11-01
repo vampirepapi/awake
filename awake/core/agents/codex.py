@@ -77,11 +77,29 @@ def is_codex_process(proc: ProcessInfo) -> bool:
     return False
 
 
-def last_turn_event(path: Path, max_bytes: int = FIRST_SCAN_MAX_BYTES) -> str | None:
-    """``"started"``, ``"ended"`` or ``None`` (no lifecycle event in the scanned tail)."""
+def _last_line_boundary(path: Path, size: int) -> int:
+    """Offset just after the last newline at or before ``size`` (0 if none)."""
+    with path.open("rb") as fh:
+        end = size
+        while end > 0:
+            start = max(0, end - CHUNK_BYTES)
+            fh.seek(start)
+            block = fh.read(end - start)
+            index = block.rfind(b"\n")
+            if index != -1:
+                return start + index + 1
+            end = start
+    return 0
+
+
+def last_turn_event(path: Path, max_bytes: int = FIRST_SCAN_MAX_BYTES, end_at: int | None = None) -> str | None:
+    """``"started"``, ``"ended"`` or ``None`` (no lifecycle event in the scanned tail).
+
+    ``end_at`` limits the scan to bytes before it (e.g. to skip a half-written last line).
+    """
     with path.open("rb") as fh:
         fh.seek(0, os.SEEK_END)
-        size = fh.tell()
+        size = fh.tell() if end_at is None else min(end_at, fh.tell())
         end = size
         carry = b""
         scanned = 0
@@ -180,15 +198,18 @@ class CodexSource:
         size = path.stat().st_size
         state = self._files.get(path)
         if state is None or size < state.offset:
-            # First sight (or the file was rewritten): find the last event from the tail.
-            state = _FileState(offset=size, event=last_turn_event(path))
+            # First sight (or the file was rewritten): find the last event among complete
+            # lines, and resume after the last newline so a half-written line is read later.
+            boundary = _last_line_boundary(path, size)
+            state = _FileState(offset=boundary, event=last_turn_event(path, end_at=boundary))
             self._files[path] = state
             return state.event
         if size == state.offset:
             return state.event
         if size - state.offset > INCREMENT_MAX_BYTES:
-            state.event = last_turn_event(path) or state.event
-            state.offset = size
+            boundary = _last_line_boundary(path, size)
+            state.event = last_turn_event(path, end_at=boundary) or state.event
+            state.offset = boundary
             return state.event
         with path.open("rb") as fh:
             fh.seek(state.offset)

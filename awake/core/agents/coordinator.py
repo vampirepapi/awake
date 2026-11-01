@@ -160,8 +160,10 @@ class AgentCoordinator(QObject):
             return
         busy = self._snapshot.any_busy
         if not busy:
-            if not self._snapshot.unknown:
-                self._capped = False  # every agent read successfully and idle → cap resets
+            # Nothing busy — fresh readings and the carried-forward last state of any
+            # unreadable agent alike — so the cap resets. (A permanently unreadable agent,
+            # e.g. an outdated Claude Code, must not keep AI mode off for every other agent.)
+            self._capped = False
             if self._holding and not self._grace_timer.is_running:
                 self._grace_timer.schedule(self._now_plus(self._grace))
                 log.info(kv("agent_grace_started", seconds=self._grace))
