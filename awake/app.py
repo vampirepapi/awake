@@ -26,6 +26,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from awake import APP_NAME, BUNDLE_ID, __version__
 from awake.core.agents import AgentCoordinator, AgentMonitor
+from awake.core.agents.cursor import CursorHooks, CursorSource
 from awake.core.agents.discovery import battery_state
 from awake.core.application_state import ApplicationState
 from awake.core.power_manager import PowerManager
@@ -139,7 +140,8 @@ class AwakeApplication:
         # AI-agent detection: its own power owner, independent of manual sessions.
         self.agent_coordinator = AgentCoordinator(self.power, battery_state)
         self.agent_coordinator.set_battery_guard(self.settings.get("agent_battery_guard"))
-        self.agent_monitor = AgentMonitor()
+        self.cursor_hooks = CursorHooks()
+        self.agent_monitor = AgentMonitor(cursor=CursorSource(self.cursor_hooks))
         self.agent_monitor.snapshot_ready.connect(self.agent_coordinator.update)
 
         # UI imports are deferred so the core can be imported without widgets.
@@ -153,7 +155,7 @@ class AwakeApplication:
         themes.set_dark(self.settings.get("dark_mode"))
 
         self.window = MainWindow(self.state, self.session_repo, backend.name, TrayController.is_available,
-                                 self.agent_coordinator)
+                                 self.agent_coordinator, self.cursor_hooks)
         self.window.apply_theme()
         themes.theme_changed.connect(self.window.apply_theme)
 

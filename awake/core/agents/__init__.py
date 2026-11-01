@@ -5,7 +5,16 @@ owner). No widgets here; see docs/AGENT_DETECTION.md for the research and design
 """
 
 from awake.core.agents.coordinator import AgentActivity, AgentCoordinator, AgentHoldState
-from awake.core.agents.models import AGENT_NAMES, AgentKind, AgentSession, AgentSnapshot, AgentStatus, SourceState
+from awake.core.agents.models import (
+    AGENT_NAMES,
+    AgentKind,
+    AgentSession,
+    AgentSnapshot,
+    AgentStatus,
+    SourceState,
+    SourceStatus,
+    claude_snapshot,
+)
 from awake.core.agents.monitor import AgentMonitor
 
 __all__ = [
@@ -19,4 +28,6 @@ __all__ = [
     "AgentSnapshot",
     "AgentStatus",
     "SourceState",
+    "SourceStatus",
+    "claude_snapshot",
 ]

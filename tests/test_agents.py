@@ -17,7 +17,15 @@ from awake.core.agents.claude import (
 )
 from awake.core.agents.coordinator import POWER_OWNER, AgentCoordinator, AgentHoldState
 from awake.core.agents.discovery import ProcessInfo
-from awake.core.agents.models import AgentKind, AgentSession, AgentSnapshot, AgentStatus, SourceState
+from awake.core.agents.models import (
+    AgentKind,
+    AgentSession,
+    AgentSnapshot,
+    AgentStatus,
+    SourceState,
+    SourceStatus,
+    claude_snapshot,
+)
 from awake.core.agents.monitor import AgentMonitor
 from awake.core.power_manager import PowerManager
 from tests.fakes import FakeBackend, FakeClock
@@ -117,6 +125,16 @@ def test_quiet_env_disables_nonessential_traffic() -> None:
 # --------------------------------------------------------------------------- monitor
 
 
+class NoSource:
+    """Stand-in for a file-based source (Codex/Cursor) that sees nothing running."""
+
+    def __init__(self, agent: AgentKind, sessions=(), state=SourceState.NOT_RUNNING) -> None:  # noqa: ANN001
+        self.agent, self.sessions, self.state = agent, list(sessions), state
+
+    def read(self, processes):  # noqa: ANN001, ANN201
+        return list(self.sessions), SourceStatus(self.agent, self.state)
+
+
 class FakeRunner:
     def __init__(self, code: int | None = 0, stdout: str = "[]") -> None:
         self.code, self.stdout = code, stdout
@@ -128,7 +146,8 @@ class FakeRunner:
 
 
 def make_monitor(qapp, runner: FakeRunner, processes: list[ProcessInfo]) -> tuple[AgentMonitor, list[AgentSnapshot]]:
-    monitor = AgentMonitor(runner=runner, lister=lambda: processes, path_exists=lambda _p: True)
+    monitor = AgentMonitor(runner=runner, lister=lambda: processes, path_exists=lambda _p: True,
+                           codex=NoSource(AgentKind.CODEX), cursor=NoSource(AgentKind.CURSOR))
     seen: list[AgentSnapshot] = []
     monitor.snapshot_ready.connect(seen.append)
     return monitor, seen
@@ -166,7 +185,7 @@ def test_monitor_failure_marks_unavailable_and_backs_off(qapp, code, stdout) -> 
 def busy_snapshot(*statuses: str) -> AgentSnapshot:
     sessions = tuple(AgentSession(AgentKind.CLAUDE_CODE, f"s{i}", 100 + i, AgentStatus(st))
                      for i, st in enumerate(statuses))
-    return AgentSnapshot(sessions, SourceState.ACTIVE)
+    return claude_snapshot(sessions)
 
 
 class Battery:
@@ -340,7 +359,7 @@ def test_cap_still_applies_after_idle_and_busy_again_within_grace(coord) -> None
 
 def test_unknown_status_keeps_the_current_decision(coord) -> None:
     coordinator, _, backend, clock, _ = coord
-    unavailable = AgentSnapshot((), SourceState.UNAVAILABLE, "Claude Code didn't respond.")
+    unavailable = claude_snapshot((), SourceState.UNAVAILABLE, "Claude Code didn't respond.")
     coordinator.update(busy_snapshot("busy"))
     coordinator.update(unavailable)                      # a timeout is not "idle"
     clock.advance(120)
@@ -354,7 +373,7 @@ def test_unknown_status_does_not_reset_the_cap(coord) -> None:
     coordinator.update(busy_snapshot("busy"))
     clock.advance(4 * 3600)
     coordinator._cap_timer.check()
-    coordinator.update(AgentSnapshot((), SourceState.UNAVAILABLE, "x"))
+    coordinator.update(claude_snapshot((), SourceState.UNAVAILABLE, "x"))
     coordinator.update(busy_snapshot("busy"))
     assert coordinator.activity.state is AgentHoldState.CAPPED and not backend.system
 
@@ -402,7 +421,8 @@ def test_result_after_stop_is_ignored(qapp) -> None:
             pending.append(done)
 
     monitor = AgentMonitor(runner=SlowRunner(), lister=lambda: [proc(5, "claude", exe=CLAUDE_BIN)],
-                           path_exists=lambda _p: True)
+                           path_exists=lambda _p: True, codex=NoSource(AgentKind.CODEX),
+                           cursor=NoSource(AgentKind.CURSOR))
     seen = []
     monitor.snapshot_ready.connect(seen.append)
     monitor.poll()

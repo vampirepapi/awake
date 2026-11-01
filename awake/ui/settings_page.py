@@ -9,14 +9,25 @@ import sys
 from PySide6 import __version__ as pyside_version
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QComboBox, QFrame, QHBoxLayout, QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from awake import LICENSE_NAME, REPOSITORY_URL, __version__
+from awake.core.agents.cursor import CursorHooks, HookConfigError
 from awake.core.settings_manager import SettingsManager, StartupBehaviour
 from awake.database.database import DatabaseError
 from awake.logging_setup import kv
 from awake.paths import app_data_dir
-from awake.ui.components.common import Card, Divider, IconLabel, label
+from awake.ui.components.common import Card, Divider, IconLabel, label, repolish
 from awake.ui.components.power_toggle import ToggleSwitch
 from awake.ui.dashboard import page_header
 from awake.ui.formatting import DURATION_LABELS
@@ -75,10 +86,17 @@ class SettingsSection(QWidget):
 class SettingsPage(QWidget):
     clear_history_requested = Signal()
 
-    def __init__(self, settings: SettingsManager, power_backend: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: SettingsManager,
+        power_backend: str,
+        cursor_hooks: CursorHooks | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setProperty("page", True)
         self._settings = settings
+        self._cursor_hooks = cursor_hooks or CursorHooks()
         self._switches: dict[str, ToggleSwitch] = {}
         self._combos: dict[str, QComboBox] = {}
 
@@ -134,18 +152,25 @@ class SettingsPage(QWidget):
         agents = SettingsSection("AI agents")
         agents.add(setting_row(
             "Keep awake while AI agents work",
-            "Detects when Claude Code is working and keeps the system awake until it finishes, then lets "
-            "it sleep normally after a minute. The display can still turn off. Awake only reads each "
+            "Detects when an AI coding agent is working and keeps the system awake until it finishes, then "
+            "lets it sleep normally after a minute. The display can still turn off. Awake only reads each "
             "session's busy/idle status — never prompts, files or output.",
             self._switch("agent_detection_enabled")))
         agents.add(setting_row(
             "Pause on low battery",
             "Don't keep awake for agents while on battery below 20%.",
             self._switch("agent_battery_guard")))
-        agents.add(setting_row(
-            "Supported agents",
-            "Claude Code (via its built-in status command). Codex, Cursor, OpenCode and Gemini CLI are planned.",
-            None))
+        agents.add(setting_row("Claude Code", "Detected automatically through its built-in status command.",
+                               info_check("Automatic")))
+        agents.add(setting_row("Codex", "Detected automatically from its session log (CLI and IDE extension).",
+                               info_check("Automatic")))
+        self.cursor_button = QPushButton()
+        self.cursor_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cursor_button.clicked.connect(self._toggle_cursor)
+        self.cursor_row = setting_row("Cursor", "…", self.cursor_button)
+        self.cursor_description = self.cursor_row.findChildren(QLabel)[1]
+        agents.add(self.cursor_row)
+        self._refresh_cursor_row()
         root.addWidget(agents)
 
         notifications = SettingsSection("Notifications")
@@ -193,6 +218,49 @@ class SettingsPage(QWidget):
         root.addStretch(1)
 
         settings.changed.connect(self._on_setting_changed)
+
+    # ------------------------------------------------------------------ Cursor connection
+
+    def _refresh_cursor_row(self) -> None:
+        connected = self._cursor_hooks.is_installed()
+        self.cursor_button.setText("Disconnect" if connected else "Connect…")
+        self.cursor_button.setProperty("variant", "" if connected else "primary")
+        repolish(self.cursor_button)
+        self.cursor_description.setText(
+            "Connected through a Cursor hook. Restart Cursor once if it isn't detected." if connected else
+            "Needs a one-time connection: Awake adds a small hook to Cursor's settings (you'll see it first)."
+        )
+
+    def _toggle_cursor(self) -> None:
+        if self._cursor_hooks.is_installed():
+            self._run_cursor_action(self._cursor_hooks.uninstall, "Cursor disconnected.",
+                                    "Awake's hook was removed from Cursor; your other hooks are untouched.")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Connect Cursor")
+        box.setText("Let Awake detect when Cursor's agent is working?")
+        box.setInformativeText(
+            "Awake adds a hook to Cursor's user settings that records only whether a chat is busy or idle "
+            "— never your prompts. Your existing hooks are kept and the file is backed up first. "
+            "You can disconnect at any time."
+        )
+        box.setDetailedText(self._cursor_hooks.plan().describe())
+        connect = box.addButton("Connect", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is connect:
+            self._run_cursor_action(self._cursor_hooks.install, "Cursor connected.",
+                                    "Restart Cursor so it loads the hook. Awake will then detect its agent.")
+
+    def _run_cursor_action(self, action, title: str, message: str) -> None:  # noqa: ANN001
+        try:
+            action()
+        except (HookConfigError, OSError) as exc:
+            log.error(kv("cursor_hook_change_failed", error=exc))
+            QMessageBox.warning(self, "Cursor", str(exc))
+        else:
+            QMessageBox.information(self, title, message)
+        self._refresh_cursor_row()
 
     # ------------------------------------------------------------------ controls
 

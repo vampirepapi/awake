@@ -26,8 +26,10 @@ from awake.core.agents.claude import (
     find_claude_processes,
     parse_agents_json,
 )
+from awake.core.agents.codex import CodexSource
+from awake.core.agents.cursor import CursorHooks, CursorSource
 from awake.core.agents.discovery import ProcessLister, list_processes
-from awake.core.agents.models import AgentSnapshot, SourceState
+from awake.core.agents.models import AgentKind, AgentSession, AgentSnapshot, SourceState, SourceStatus
 from awake.logging_setup import kv
 
 log = logging.getLogger("awake.agents")
@@ -111,10 +113,17 @@ class AgentMonitor(QObject):
         lister: ProcessLister = list_processes,
         interval_ms: int = POLL_INTERVAL_MS,
         path_exists: Callable[[str], bool] = os.path.exists,
+        codex: CodexSource | None = None,
+        cursor: CursorSource | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._path_exists = path_exists
+        self._codex = codex if codex is not None else CodexSource()
+        self._cursor = cursor if cursor is not None else CursorSource(CursorHooks())
+        # Results of the file-based sources from the current pass, merged with Claude's.
+        self._others: tuple[list[AgentSession], list[SourceStatus]] = ([], [])
+        self._claude_status = SourceStatus(AgentKind.CLAUDE_CODE, SourceState.NOT_RUNNING)
         self._runner = runner if runner is not None else QProcessRunner(self)
         self._lister = lister
         self._interval_ms = interval_ms
@@ -145,20 +154,26 @@ class AgentMonitor(QObject):
             log.info(kv("agent_monitor_stopped"))
         self._generation += 1
         self._backoff_until = 0.0
+        self._others = ([], [])
+        self._claude_status = SourceStatus(AgentKind.CLAUDE_CODE, SourceState.NOT_RUNNING)
         self._emit(AgentSnapshot())
 
     def poll(self) -> None:
         try:
-            claude = find_claude_processes(self._lister())
+            processes = self._lister()
         except Exception as exc:  # noqa: BLE001 - detection must never take the app down
             log.error(kv("agent_scan_failed", error=exc))
-            claude = []
+            processes = []
+        self._others = self._read_file_sources(processes)
+        claude = find_claude_processes(processes)
         if not claude:
             self._backoff_until = 0.0  # a fresh start may be a newer, working version
-            self._emit(AgentSnapshot(claude=SourceState.NOT_RUNNING))
+            self._emit_claude([], SourceStatus(AgentKind.CLAUDE_CODE, SourceState.NOT_RUNNING))
             return
         if time.monotonic() < self._backoff_until:
-            return  # keep the last (unavailable) snapshot until the back-off ends
+            # Keep Claude's last (unavailable) status; still report the other agents.
+            self._emit_claude([], self._claude_status)
+            return
         argv = agents_command(claude, exists=self._path_exists)
         if argv is None:
             self._fail("Can't locate Claude Code.")
@@ -185,20 +200,41 @@ class AgentMonitor(QObject):
             return
         # Belt and braces: only trust "busy" for a process we can see running right now.
         live = [s for s in sessions if s.pid in self._live_pids]
-        self._emit(AgentSnapshot(tuple(live), SourceState.ACTIVE))
+        self._emit_claude(live, SourceStatus(AgentKind.CLAUDE_CODE, SourceState.ACTIVE))
 
     def _fail(self, reason: str, transient: bool = False) -> None:
         if self._last.claude is not SourceState.UNAVAILABLE:
             log.warning(kv("agent_source_unavailable", agent="claude-code", reason=reason))
         backoff_ms = TRANSIENT_BACKOFF_MS if transient else FAILURE_BACKOFF_MS
         self._backoff_until = time.monotonic() + backoff_ms / 1000
-        self._emit(AgentSnapshot(claude=SourceState.UNAVAILABLE, claude_detail=reason))
+        self._emit_claude([], SourceStatus(AgentKind.CLAUDE_CODE, SourceState.UNAVAILABLE, reason))
+
+    def _read_file_sources(self, processes: list) -> tuple[list[AgentSession], list[SourceStatus]]:  # noqa: ANN001
+        sessions: list[AgentSession] = []
+        statuses: list[SourceStatus] = []
+        for kind, source in ((AgentKind.CODEX, self._codex), (AgentKind.CURSOR, self._cursor)):
+            try:
+                found, status = source.read(processes)
+            except Exception as exc:  # noqa: BLE001 - one broken source must not stop the others
+                log.error(kv("agent_source_failed", agent=kind.value, error=type(exc).__name__))
+                found, status = [], SourceStatus(kind, SourceState.UNAVAILABLE, "Status couldn't be read.")
+            sessions.extend(found)
+            statuses.append(status)
+        return sessions, statuses
+
+    def _emit_claude(self, claude_sessions: list[AgentSession], claude_status: SourceStatus) -> None:
+        self._claude_status = claude_status
+        other_sessions, other_statuses = self._others
+        self._emit(AgentSnapshot(tuple(claude_sessions) + tuple(other_sessions),
+                                 (claude_status, *other_statuses)))
 
     def _emit(self, snapshot: AgentSnapshot) -> None:
-        snapshot = AgentSnapshot(snapshot.sessions, snapshot.claude, snapshot.claude_detail, time.time())
-        changed = (snapshot.sessions, snapshot.claude) != (self._last.sessions, self._last.claude)
-        if changed:
-            busy = len(snapshot.busy_sessions)
-            log.info(kv("agent_snapshot", claude=snapshot.claude.value, sessions=len(snapshot.sessions), busy=busy))
+        snapshot = AgentSnapshot(snapshot.sessions, snapshot.sources, time.time())
+        if (snapshot.sessions, snapshot.sources) != (self._last.sessions, self._last.sources):
+            states = {s.agent.value: s.state.value for s in snapshot.sources}
+            busy = {k.value: sum(1 for s in snapshot.busy_sessions if s.agent is k) for k in AgentKind}
+            log.info(kv("agent_snapshot", sessions=len(snapshot.sessions),
+                        busy=sum(busy.values()), states=",".join(f"{k}:{v}" for k, v in states.items()),
+                        busy_by_agent=",".join(f"{k}:{v}" for k, v in busy.items() if v)))
         self._last = snapshot
         self.snapshot_ready.emit(snapshot)

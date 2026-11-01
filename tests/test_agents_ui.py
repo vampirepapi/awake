@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from awake.core.agents import AgentCoordinator, AgentKind, AgentSession, AgentSnapshot, AgentStatus, SourceState
+from awake.core.agents import AgentCoordinator, AgentKind, AgentSession, AgentStatus, SourceState, claude_snapshot
 from awake.core.application_state import ApplicationState
 from awake.core.power_manager import PowerManager
 from awake.core.session_manager import SessionManager
@@ -14,7 +14,7 @@ from awake.core.settings_manager import SettingsManager
 def snapshot(*statuses: str, claude: SourceState = SourceState.ACTIVE, detail: str | None = None) -> AgentSnapshot:
     sessions = tuple(AgentSession(AgentKind.CLAUDE_CODE, f"s{i}", 200 + i, AgentStatus(st))
                      for i, st in enumerate(statuses))
-    return AgentSnapshot(sessions, claude, detail)
+    return claude_snapshot(sessions, claude, detail)
 
 
 @pytest.fixture
@@ -59,7 +59,7 @@ def test_row_describes_each_state(ui, clock) -> None:
     window, _, agents, _ = ui
     row = window.dashboard.controls.agents
     agents.update(snapshot(claude=SourceState.NOT_RUNNING))
-    assert row.description.text() == "Watching for Claude Code."
+    assert row.description.text() == "Watching for AI agents."
     agents.update(snapshot("idle"))
     assert row.description.text() == "No agent working right now."
     agents.update(snapshot("busy", "busy"))
@@ -153,3 +153,23 @@ def test_tray_menu_shows_ai_mode_instead_of_duration(ui) -> None:
         assert not tray.ai_mode_action.isVisible() and tray.duration_actions[3600].isChecked()
     finally:
         tray.hide()
+
+
+def test_settings_cursor_connect_and_disconnect(qapp, settings_repo, tmp_path, monkeypatch) -> None:
+    from PySide6.QtWidgets import QMessageBox
+
+    from awake.core.agents.cursor import CursorHooks
+    from awake.core.settings_manager import SettingsManager
+    from awake.ui.settings_page import SettingsPage
+
+    shown: list[str] = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a: shown.append(a[1]))
+    hooks = CursorHooks(cursor_dir=tmp_path / ".cursor", state_dir=tmp_path / "state", platform="darwin")
+    page = SettingsPage(SettingsManager(settings_repo), "fake", hooks)
+    assert page.cursor_button.text() == "Connect…"
+    assert "one-time connection" in page.cursor_description.text()
+    page._run_cursor_action(hooks.install, "Cursor connected.", "Restart Cursor…")
+    assert hooks.is_installed() and page.cursor_button.text() == "Disconnect"
+    page._toggle_cursor()                                     # connected → disconnects without a dialog
+    assert not hooks.is_installed() and page.cursor_button.text() == "Connect…"
+    assert shown == ["Cursor connected.", "Cursor disconnected."]

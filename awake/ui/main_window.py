@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from awake import APP_NAME, __version__
 from awake.core.agents import AgentCoordinator
+from awake.core.agents.cursor import CursorHooks
 from awake.core.application_state import ApplicationState
 from awake.database.repository import SessionRepository
 from awake.ui import agent_text, icons
@@ -112,6 +113,7 @@ class MainWindow(QWidget):
         power_backend: str,
         tray_available: Callable[[], bool],
         agents: AgentCoordinator | None = None,
+        cursor_hooks: CursorHooks | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -136,7 +138,7 @@ class MainWindow(QWidget):
         self.pages.setObjectName("Pages")
         self.dashboard = Dashboard(state, sessions_repo, agents)
         self.sessions_page = SessionsPage(sessions_repo)
-        self.settings_page = SettingsPage(state.settings, power_backend)
+        self.settings_page = SettingsPage(state.settings, power_backend, cursor_hooks)
         self.about_page = AboutPage(power_backend)
         self._page_index: dict[str, int] = {}
         for key, widget in (("home", self.dashboard), ("sessions", self.sessions_page),

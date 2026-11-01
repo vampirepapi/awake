@@ -1,6 +1,6 @@
 [project]
 name = "awake"
-version = "0.2.0"
+version = "0.3.0"
 description = "Awake — keep your computer awake while you work. Stay focused. Stay awake."
 readme = "README.md"
 license = { text = "MIT" }

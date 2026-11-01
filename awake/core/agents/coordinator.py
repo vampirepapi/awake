@@ -22,7 +22,7 @@ from enum import StrEnum
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from awake.core.agents.models import AgentSession, AgentSnapshot, SourceState
+from awake.core.agents.models import AgentSession, AgentSnapshot
 from awake.core.power_manager import PowerError, PowerManager
 from awake.core.timer_manager import Clock, TimerManager
 from awake.database.models import utcnow
@@ -130,12 +130,11 @@ class AgentCoordinator(QObject):
             return
         if not self._enabled:
             snapshot = AgentSnapshot()
-        elif snapshot.claude is SourceState.UNAVAILABLE:
-            # A failed status query tells us nothing about whether the agent is working.
-            # Keep the current hold decision (still bounded by the cap and the grace
-            # timer) and only update what the UI shows.
-            self._snapshot = AgentSnapshot(self._snapshot.sessions, snapshot.claude, snapshot.claude_detail,
-                                           snapshot.taken_at)
+        elif snapshot.unknown and not snapshot.any_busy:
+            # Some running agent's status couldn't be read, and nothing is known to be
+            # busy: that proves nothing. Keep the current hold decision (still bounded
+            # by the cap and the grace timer) and only update what the UI shows.
+            self._snapshot = AgentSnapshot(self._snapshot.sessions, snapshot.sources, snapshot.taken_at)
             self._emit_if_changed()
             return
         self._snapshot = snapshot
@@ -236,7 +235,7 @@ class AgentCoordinator(QObject):
 
     def _emit_if_changed(self) -> None:
         snap = self._snapshot
-        key = (self._state, tuple(s.session_id for s in snap.busy_sessions), snap.claude, snap.claude_detail)
+        key = (self._state, tuple((s.agent, s.session_id) for s in snap.busy_sessions), snap.sources)
         if key == self._last_emitted:
             return
         self._last_emitted = key

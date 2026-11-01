@@ -76,7 +76,8 @@ class HeroCard(Card):
         self.body.addWidget(self.durations)
         self.body.addStretch(1)
 
-    def set_active(self, active: bool, animate: bool = True, agent_status: str | None = None) -> None:
+    def set_active(self, active: bool, animate: bool = True, agent_status: str | None = None,
+                   agent_line: str | None = None) -> None:
         """``active`` = manual session (drives the button); ``agent_status`` = an agent is holding."""
         self.button.set_active(active, animate)
         on = active or agent_status is not None
@@ -85,7 +86,7 @@ class HeroCard(Card):
         if active:
             self.description.setText("Your system will stay awake.")
         elif agent_status is not None:
-            self.description.setText("AI mode: staying awake while Claude Code works.")
+            self.description.setText(agent_line or "AI mode: staying awake while your agent works.")
         else:
             self.description.setText("Your system can sleep normally.")
 
@@ -302,7 +303,8 @@ class Dashboard(QWidget):
         active = session is not None
         activity = self._agents.activity if self._agents is not None else None
         agent_status = agent_text.short_status(activity)
-        self.hero.set_active(active, animate, agent_status)
+        self.hero.set_active(active, animate, agent_status,
+                             agent_text.hero_line(activity) if activity is not None else None)
         self.controls.agents.description.setText(agent_text.describe(activity))
         self.controls.agents.tile.set_active(agent_status is not None
                                              or self._state.settings.get("agent_detection_enabled"))
