@@ -11,11 +11,12 @@ from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from awake import APP_NAME
+from awake.core.agents import AgentCoordinator
 from awake.core.application_state import ApplicationState
 from awake.core.session_manager import SUPPORTED_DURATIONS
 from awake.database.models import EndReason, Session
 from awake.logging_setup import kv
-from awake.ui import icons
+from awake.ui import agent_text, icons
 from awake.ui.formatting import (
     DURATION_LABELS,
     format_duration,
@@ -35,21 +36,23 @@ class TrayController(QObject):
         state: ApplicationState,
         open_window: Callable[[str | None], None],
         quit_app: Callable[[], None],
+        agents: AgentCoordinator | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._state = state
+        self._agents = agents
         self._open_window = open_window
         self._quit = quit_app
         self._hint_shown = False
 
-        # Fires once per displayed-minute change while a timed session runs (macOS label).
         # macOS: Qt's menu-bar item is a fixed square; widen it so the countdown fits.
         self._widener = None
         if IS_MAC:
             from awake.platforms.macos import StatusItemWidener
 
             self._widener = StatusItemWidener()
+        # Fires once per displayed-minute change while a timed session runs (macOS label).
         self._label_timer = QTimer(self)
         self._label_timer.setSingleShot(True)
         self._label_timer.setTimerType(Qt.TimerType.PreciseTimer)  # flip the minute on time
@@ -67,7 +70,11 @@ class TrayController(QObject):
         sessions.session_changed.connect(lambda _s: self.refresh())
         sessions.session_ended.connect(self._on_ended)
         state.selection_changed.connect(self.refresh)
-        state.settings.changed.connect(lambda key, _v: self.refresh() if key == "show_menu_bar_timer" else None)
+        state.settings.changed.connect(
+            lambda key, _v: self.refresh() if key in ("show_menu_bar_timer", "agent_detection_enabled") else None
+        )
+        if agents is not None:
+            agents.changed.connect(lambda _activity: self.refresh())
         hints = QGuiApplication.styleHints()
         if hasattr(hints, "colorSchemeChanged"):
             hints.colorSchemeChanged.connect(lambda *_: self.refresh())
@@ -110,8 +117,13 @@ class TrayController(QObject):
         self.system_action.triggered.connect(self._state.set_keep_system)
         self.display_action = QAction("Keep display awake", m, checkable=True)
         self.display_action.triggered.connect(self._state.set_keep_display)
+        self.agents_action = QAction("Keep awake while AI agents work", m, checkable=True)
+        self.agents_action.triggered.connect(
+            lambda on: self._state.settings.set("agent_detection_enabled", bool(on))
+        )
         m.addAction(self.system_action)
         m.addAction(self.display_action)
+        m.addAction(self.agents_action)
         m.addSeparator()
 
         open_action = QAction(f"Open {APP_NAME}", m)
@@ -129,7 +141,11 @@ class TrayController(QObject):
     def refresh(self) -> None:
         session = self._state.active_session
         now = self._state.sessions.now()
-        if session is None:
+        agent_status = agent_text.short_status(self._agents.activity if self._agents is not None else None)
+        if session is None and agent_status is not None:
+            status = f"Awake is ON · {agent_status}"
+            tooltip = f"{APP_NAME} — on, {agent_status}"
+        elif session is None:
             status = "Awake is OFF"
             tooltip = f"{APP_NAME} — off"
         elif session.is_indefinite:
@@ -148,10 +164,12 @@ class TrayController(QObject):
             action.setChecked(duration == selected)
         self.system_action.setChecked(self._state.keep_system)
         self.display_action.setChecked(self._state.keep_display)
+        self.agents_action.setChecked(bool(self._state.settings.get("agent_detection_enabled")))
 
         dark = QGuiApplication.styleHints().colorScheme() != Qt.ColorScheme.Light
-        label, infinite = self._menu_bar_label(session, now)
-        self.tray.setIcon(icons.tray_icon(session is not None, mask=IS_MAC, dark_background=dark,
+        label, infinite = self._menu_bar_label(session, now, agent_holding=agent_status is not None)
+        active = session is not None or agent_status is not None
+        self.tray.setIcon(icons.tray_icon(active, mask=IS_MAC, dark_background=dark,
                                           label=label, infinite=infinite))
 
     def _wide_item_available(self) -> bool:
@@ -159,13 +177,22 @@ class TrayController(QObject):
             return True  # tests / non-mac: nothing to widen
         return self.tray.isVisible() and self._widener.apply()
 
-    def _menu_bar_label(self, session: Session | None, now) -> tuple[str | None, bool]:  # noqa: ANN001
-        """Text (or ∞) to draw beside the macOS menu-bar icon; schedules the next update."""
+    def _menu_bar_label(
+        self, session: Session | None, now, agent_holding: bool = False  # noqa: ANN001
+    ) -> tuple[str | None, bool]:
+        """Text (or ∞) to draw beside the macOS menu-bar icon; schedules the next update.
+
+        A manual session's countdown wins; otherwise ``AI`` while an agent holds the system.
+        """
         self._label_timer.stop()
-        if session is None or not IS_MAC or not self._state.settings.get("show_menu_bar_timer"):
+        if not IS_MAC or not self._state.settings.get("show_menu_bar_timer"):
+            return None, False
+        if session is None and not agent_holding:
             return None, False
         if not self._wide_item_available():
             return None, False  # a wide image in a square slot would be shrunk to a third
+        if session is None:
+            return "AI", False
         if session.is_indefinite:
             return None, True
         remaining = session.remaining_seconds(now) or 0.0

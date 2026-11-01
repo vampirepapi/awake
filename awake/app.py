@@ -23,6 +23,8 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from awake import APP_NAME, BUNDLE_ID, __version__
+from awake.core.agents import AgentCoordinator, AgentMonitor
+from awake.core.agents.discovery import battery_state
 from awake.core.application_state import ApplicationState
 from awake.core.power_manager import PowerManager
 from awake.core.session_manager import SessionManager
@@ -125,6 +127,12 @@ class AwakeApplication:
         self.sessions = SessionManager(self.power, self.session_repo)
         self.state = ApplicationState(self.sessions, self.settings)
 
+        # AI-agent detection: its own power owner, independent of manual sessions.
+        self.agent_coordinator = AgentCoordinator(self.power, battery_state)
+        self.agent_coordinator.set_battery_guard(self.settings.get("agent_battery_guard"))
+        self.agent_monitor = AgentMonitor()
+        self.agent_monitor.snapshot_ready.connect(self.agent_coordinator.update)
+
         # UI imports are deferred so the core can be imported without widgets.
         from awake.ui import icons
         from awake.ui.main_window import MainWindow
@@ -135,12 +143,13 @@ class AwakeApplication:
         themes = theme_manager()
         themes.set_dark(self.settings.get("dark_mode"))
 
-        self.window = MainWindow(self.state, self.session_repo, backend.name, TrayController.is_available)
+        self.window = MainWindow(self.state, self.session_repo, backend.name, TrayController.is_available,
+                                 self.agent_coordinator)
         self.window.apply_theme()
         themes.theme_changed.connect(self.window.apply_theme)
 
         if TrayController.is_available():
-            self.tray = TrayController(self.state, self.show_window, self.quit)
+            self.tray = TrayController(self.state, self.show_window, self.quit, self.agent_coordinator)
             self.window.on_hidden_to_tray = self._on_hidden_to_tray
         else:
             log.warning(kv("tray_unavailable", note="closing the window will quit Awake"))
@@ -151,6 +160,7 @@ class AwakeApplication:
             self.dock = DockController()
 
         self.state.error.connect(self._show_error)
+        self.agent_coordinator.error_occurred.connect(lambda msg: self._show_error("AI agents", msg))
         self.settings.changed.connect(self._on_setting_changed)
         self._sync_autostart()
 
@@ -167,6 +177,7 @@ class AwakeApplication:
         else:
             self.window.show()
         self.state.apply_startup_behaviour()
+        self._sync_agent_detection()
 
         QTimer.singleShot(0, self._log_startup_complete)
         return self.qt.exec()
@@ -201,6 +212,18 @@ class AwakeApplication:
             theme_manager().set_dark(bool(value))
         elif key == "launch_at_startup":
             self._sync_autostart()
+        elif key == "agent_detection_enabled":
+            self._sync_agent_detection()
+        elif key == "agent_battery_guard":
+            self.agent_coordinator.set_battery_guard(bool(value))
+
+    def _sync_agent_detection(self) -> None:
+        enabled = bool(self.settings.get("agent_detection_enabled"))
+        self.agent_coordinator.set_enabled(enabled)
+        if enabled:
+            self.agent_monitor.start()
+        else:
+            self.agent_monitor.stop()
 
     def _sync_autostart(self) -> None:
         autostart = create_autostart()
@@ -243,6 +266,10 @@ class AwakeApplication:
         self._shutdown_done = True
         log.info(kv("shutdown_started"))
         try:
+            # Agents first: a late poll must not re-acquire after release_all().
+            if hasattr(self, "agent_coordinator"):
+                self.agent_coordinator.shutdown()
+                self.agent_monitor.stop()
             if hasattr(self, "sessions"):
                 self.sessions.shutdown()
             stop_worker = getattr(getattr(self, "backend", None), "shutdown", None)

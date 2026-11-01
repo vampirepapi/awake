@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
 )
 
 from awake import APP_NAME, __version__
+from awake.core.agents import AgentCoordinator
 from awake.core.application_state import ApplicationState
 from awake.database.repository import SessionRepository
-from awake.ui import icons
+from awake.ui import agent_text, icons
 from awake.ui.about_page import AboutPage
 from awake.ui.components.common import label
 from awake.ui.components.status_indicator import StatusDot
@@ -110,15 +111,17 @@ class MainWindow(QWidget):
         sessions_repo: SessionRepository,
         power_backend: str,
         tray_available: Callable[[], bool],
+        agents: AgentCoordinator | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("Root")
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(icons.app_icon())
-        self.resize(1040, 740)
-        self.setMinimumSize(920, 680)
+        self.resize(1040, 760)
+        self.setMinimumSize(1000, 740)  # below this the dashboard cards overlap
         self._state = state
+        self._agents = agents
         self._tray_available = tray_available
         self._quitting = False
         self.on_hidden_to_tray: Callable[[], None] | None = None
@@ -131,7 +134,7 @@ class MainWindow(QWidget):
 
         self.pages = QStackedWidget()
         self.pages.setObjectName("Pages")
-        self.dashboard = Dashboard(state, sessions_repo)
+        self.dashboard = Dashboard(state, sessions_repo, agents)
         self.sessions_page = SessionsPage(sessions_repo)
         self.settings_page = SettingsPage(state.settings, power_backend)
         self.about_page = AboutPage(power_backend)
@@ -147,6 +150,8 @@ class MainWindow(QWidget):
         state.sessions.session_started.connect(self._update_sidebar_status)
         state.sessions.session_changed.connect(self._update_sidebar_status)
         state.sessions.session_ended.connect(self._on_session_ended)
+        if agents is not None:
+            agents.changed.connect(self._update_sidebar_status)
 
         # Sidebar status ticks once a minute — it shows minutes, not seconds.
         self._status_timer = QTimer(self)
@@ -198,8 +203,9 @@ class MainWindow(QWidget):
     def _update_sidebar_status(self, *_: object) -> None:
         session = self._state.active_session
         if session is None:
-            self.sidebar.status_dot.set_active(False)
-            self.sidebar.status_text.setText("Awake is off")
+            agent_status = agent_text.short_status(self._agents.activity if self._agents else None)
+            self.sidebar.status_dot.set_active(agent_status is not None)
+            self.sidebar.status_text.setText(f"On · {agent_status}" if agent_status else "Awake is off")
             self._status_timer.stop()
             return
         self.sidebar.status_dot.set_active(True)

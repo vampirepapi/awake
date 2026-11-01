@@ -1,11 +1,11 @@
 [project]
 name = "awake"
-version = "0.1.2"
+version = "0.2.0"
 description = "Awake — keep your computer awake while you work. Stay focused. Stay awake."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.12"
-dependencies = ["PySide6-Essentials>=6.7"]
+dependencies = ["PySide6-Essentials>=6.7", "psutil>=5.9"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

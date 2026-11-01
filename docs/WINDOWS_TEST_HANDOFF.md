@@ -119,6 +119,14 @@ that on battery, system power requests are ended 5 minutes after the sleep timeo
 battery and record whether Awake's request survives past sleep-timeout + 5 min. Report the result either way; it
 decides what the README must tell Windows laptop users.
 
+### 7c. AI-agent detection (new in 0.2)
+Install Claude Code on the PC if it isn't already (`claude --version`). Then:
+1. `claude agents --json` in a terminal — record whether it works on Windows at all (undocumented) and paste the output shape.
+2. With Awake running and agent detection on, give a Claude Code session a task that takes > 1 minute. Within ~20 s the
+   dashboard should read "Auto · Claude Code working" and `powercfg /requests` should list Awake under SYSTEM.
+3. When the task finishes, Awake should release about 60 s later (log `event=agent_hold_released reason=idle`).
+4. Turn "Keep awake for AI agents" off mid-task → released immediately.
+
 ### 8. Performance
 With a session active and the window hidden:
 ```powershell

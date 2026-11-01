@@ -51,6 +51,9 @@ SETTINGS: dict[str, SettingSpec] = {
     "keep_system_awake_default": SettingSpec(True),
     "keep_display_awake_default": SettingSpec(False),
     "startup_behaviour": SettingSpec(StartupBehaviour.STAY_OFF, choices=StartupBehaviour.ALL),
+    # AI agents
+    "agent_detection_enabled": SettingSpec(True),   # keep awake while Claude Code is working
+    "agent_battery_guard": SettingSpec(True),       # …but not on battery below 20 %
     # Notifications
     "notify_on_start": SettingSpec(False),
     "notify_on_stop": SettingSpec(False),

@@ -46,16 +46,31 @@ awake/
 
 `awake.db` in the app-data directory. Schema version in `PRAGMA user_version`; each migration runs in a transaction. All queries are parameterised; sort columns come from a whitelist. On startup: stale `active` rows → `interrupted`; finished sessions older than 365 days are pruned. No heartbeat writes while a session runs.
 
-## Future: AI-agent awareness (not in v0.1)
+## AI-agent awareness
+
+Implemented in 0.2 for Claude Code (`awake/core/agents/`); research and roadmap in [AGENT_DETECTION.md](AGENT_DETECTION.md).
 
 ```
-AgentMonitor (Claude Code, Codex, OpenCode, Cursor detectors)
-    │  activity started / finished
+AgentMonitor (every 20 s; only runs `claude agents --json` while a Claude process exists)
+    │  AgentSnapshot: sessions with busy / waiting / idle
     ▼
-ActivityCoordinator  ── policy: when to keep awake, grace periods, user overrides
-    │
+AgentCoordinator — grace 60 s, cap 4 h, battery guard (< 20 % on battery), error retry
+    │  PowerManager owner "agents" (system only; display may sleep)
     ▼
-SessionManager.start()/stop()      or     PowerManager.acquire("agent:<name>") directly
+PowerManager  ◄── owner "session" (manual sessions, SessionManager)
 ```
 
-Nothing in `core/` or `platforms/` needs to change: an agent integration can either drive sessions through `SessionManager` (visible in history and UI) or hold its own `PowerManager` owner (independent of manual sessions — the union semantics already guarantee that stopping a manual session never drops an agent's request, which is covered by `test_stop_does_not_release_other_owners`). The power engine has no dependency on any agent code.
+Design decisions:
+
+- **Agents get their own PowerManager owner instead of going through `SessionManager`.** Manual sessions stay
+  single-active with an honest history, and the union semantics guarantee that stopping a manual session never drops
+  an agent's request (and vice versa) — `test_agents_and_manual_session_never_release_each_other`.
+- **The power button reflects manual sessions only**; title, status pill, sidebar and tray reflect the union
+  ("Auto · Claude Code working"), so pressing Stop while an agent works never looks broken.
+- **The `claude` command is taken from the running process** (`psutil` `exe()`), not `PATH`: a Dock-launched app has a
+  minimal PATH, and this guarantees the matching version. It runs through `QProcess` (never blocking the UI) with
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so polling causes no update checks or telemetry.
+- **Failures back off** to 5 minutes and surface a one-line reason in the dashboard row.
+- **Shutdown order**: `AgentCoordinator.shutdown()` runs before `SessionManager.shutdown()` so a late poll can't
+  re-acquire after `release_all()`.
+- **Agent stretches are not yet recorded in session history** (phase 2).

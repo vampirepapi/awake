@@ -8,10 +8,12 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
+from awake.core.agents import AgentCoordinator
 from awake.core.application_state import ApplicationState
 from awake.database.database import DatabaseError
 from awake.database.models import Session
 from awake.database.repository import SessionRepository
+from awake.ui import agent_text
 from awake.ui.components.common import Card, Divider, ProgressBar, SectionHeader, label, repolish
 from awake.ui.components.duration_selector import DurationSelector
 from awake.ui.components.power_button import PowerButton
@@ -66,13 +68,18 @@ class HeroCard(Card):
         self.body.addWidget(self.durations)
         self.body.addStretch(1)
 
-    def set_active(self, active: bool, animate: bool = True) -> None:
+    def set_active(self, active: bool, animate: bool = True, agent_status: str | None = None) -> None:
+        """``active`` = manual session (drives the button); ``agent_status`` = an agent is holding."""
         self.button.set_active(active, animate)
-        self.dot.set_active(active)
-        self.title.setText("Awake is ON" if active else "Awake is OFF")
-        self.description.setText(
-            "Your system will stay awake." if active else "Your system can sleep normally."
-        )
+        on = active or agent_status is not None
+        self.dot.set_active(on)
+        self.title.setText("Awake is ON" if on else "Awake is OFF")
+        if active:
+            self.description.setText("Your system will stay awake.")
+        elif agent_status is not None:
+            self.description.setText(f"{agent_status} — staying awake automatically.")
+        else:
+            self.description.setText("Your system can sleep normally.")
 
 
 class PowerControlsCard(Card):
@@ -81,11 +88,12 @@ class PowerControlsCard(Card):
         header = SectionHeader("Power controls", "sliders-horizontal")
         header.setContentsMargins(4, 2, 4, 6)
         self.body.addWidget(header)
-        self.system = PowerToggleRow("cpu", "Keep system awake", "Prevent the system from automatically going to sleep.")
-        self.display = PowerToggleRow("monitor", "Keep display awake",
-                                      "Prevent the display from automatically turning off.")
+        self.system = PowerToggleRow("cpu", "Keep system awake", "Prevents automatic sleep.")
+        self.display = PowerToggleRow("monitor", "Keep display awake", "Keeps the screen on.")
+        self.agents = PowerToggleRow("bot", "Keep awake for AI agents", agent_text.describe(None))
         self.body.addWidget(self.system)
         self.body.addWidget(self.display)
+        self.body.addWidget(self.agents)
 
 
 class TimeRemainingCard(Card):
@@ -175,11 +183,18 @@ class RecentSessionsCard(Card):
 class Dashboard(QWidget):
     view_all_requested = Signal()
 
-    def __init__(self, state: ApplicationState, sessions_repo: SessionRepository, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        state: ApplicationState,
+        sessions_repo: SessionRepository,
+        agents: AgentCoordinator | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setProperty("page", True)
         self._state = state
         self._repo = sessions_repo
+        self._agents = agents
 
         root = QVBoxLayout(self)
         root.setContentsMargins(32, 28, 32, 28)
@@ -215,6 +230,10 @@ class Dashboard(QWidget):
         self.controls.system.toggled.connect(state.set_keep_system)
         self.controls.display.toggled.connect(state.set_keep_display)
         self.recent.view_all_requested.connect(self.view_all_requested)
+        self.controls.agents.toggled.connect(lambda on: state.settings.set("agent_detection_enabled", on))
+        state.settings.changed.connect(self._on_setting_changed)
+        if agents is not None:
+            agents.changed.connect(lambda _activity: self._sync_session())
 
         state.selection_changed.connect(self._sync_selection)
         state.sessions.session_started.connect(self._on_session_event)
@@ -242,15 +261,28 @@ class Dashboard(QWidget):
         self.hero.durations.set_duration(self._state.selected_duration)
         self.controls.system.set_checked(self._state.keep_system)
         self.controls.display.set_checked(self._state.keep_display)
+        self.controls.agents.set_checked(self._state.settings.get("agent_detection_enabled"))
+
+    def _on_setting_changed(self, key: str, _value: object) -> None:
+        if key == "agent_detection_enabled":
+            self._sync_selection()
+            self._sync_session()
 
     def _sync_session(self, animate: bool = True) -> None:
         session = self._state.active_session
         active = session is not None
-        self.hero.set_active(active, animate)
+        activity = self._agents.activity if self._agents is not None else None
+        agent_status = agent_text.short_status(activity)
+        self.hero.set_active(active, animate, agent_status)
+        self.controls.agents.description.setText(agent_text.describe(activity))
+        self.controls.agents.tile.set_active(agent_status is not None
+                                             or self._state.settings.get("agent_detection_enabled"))
         if active:
             left = "running indefinitely" if session.is_indefinite else \
                 f"{format_duration(session.remaining_seconds(self._state.sessions.now()))} left"
             self.pill.set_active(True, f"Active · {left}")
+        elif agent_status is not None:
+            self.pill.set_active(True, f"Auto · {agent_status}")
         else:
             self.pill.set_active(False, "Idle")
         self._refresh_time()

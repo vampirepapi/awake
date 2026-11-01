@@ -131,6 +131,23 @@ class SettingsPage(QWidget):
                               ])))
         root.addWidget(power)
 
+        agents = SettingsSection("AI agents")
+        agents.add(setting_row(
+            "Keep awake while AI agents work",
+            "Detects when Claude Code is working and keeps the system awake until it finishes, then lets "
+            "it sleep normally after a minute. The display can still turn off. Awake only reads each "
+            "session's busy/idle status — never prompts, files or output.",
+            self._switch("agent_detection_enabled")))
+        agents.add(setting_row(
+            "Pause on low battery",
+            "Don't keep awake for agents while on battery below 20%.",
+            self._switch("agent_battery_guard")))
+        agents.add(setting_row(
+            "Supported agents",
+            "Claude Code (via its built-in status command). Codex, Cursor, OpenCode and Gemini CLI are planned.",
+            None))
+        root.addWidget(agents)
+
         notifications = SettingsSection("Notifications")
         notifications.add(setting_row("Session starts", "Notify when an awake session begins.",
                                       self._switch("notify_on_start")))
