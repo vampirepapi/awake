@@ -44,6 +44,12 @@ class TrayController(QObject):
         self._hint_shown = False
 
         # Fires once per displayed-minute change while a timed session runs (macOS label).
+        # macOS: Qt's menu-bar item is a fixed square; widen it so the countdown fits.
+        self._widener = None
+        if IS_MAC:
+            from awake.platforms.macos import StatusItemWidener
+
+            self._widener = StatusItemWidener()
         self._label_timer = QTimer(self)
         self._label_timer.setSingleShot(True)
         self._label_timer.setTimerType(Qt.TimerType.PreciseTimer)  # flip the minute on time
@@ -68,6 +74,7 @@ class TrayController(QObject):
 
         self.refresh()
         self.tray.show()
+        QTimer.singleShot(0, self.refresh)  # the native item exists only after show()
         log.info(kv("tray_shown", available=QSystemTrayIcon.isSystemTrayAvailable()))
 
     @staticmethod
@@ -147,11 +154,18 @@ class TrayController(QObject):
         self.tray.setIcon(icons.tray_icon(session is not None, mask=IS_MAC, dark_background=dark,
                                           label=label, infinite=infinite))
 
+    def _wide_item_available(self) -> bool:
+        if self._widener is None:
+            return True  # tests / non-mac: nothing to widen
+        return self.tray.isVisible() and self._widener.apply()
+
     def _menu_bar_label(self, session: Session | None, now) -> tuple[str | None, bool]:  # noqa: ANN001
         """Text (or ∞) to draw beside the macOS menu-bar icon; schedules the next update."""
         self._label_timer.stop()
         if session is None or not IS_MAC or not self._state.settings.get("show_menu_bar_timer"):
             return None, False
+        if not self._wide_item_available():
+            return None, False  # a wide image in a square slot would be shrunk to a third
         if session.is_indefinite:
             return None, True
         remaining = session.remaining_seconds(now) or 0.0

@@ -242,6 +242,83 @@ class DockController:
             log.warning(kv("dock_policy_failed", visible=visible, error=exc))
 
 
+class StatusItemWidener:
+    """Lets the Qt menu-bar item grow to fit a wide image (icon + countdown).
+
+    Qt creates its NSStatusItem with ``NSSquareStatusItemLength`` (-2), so any
+    image wider than it is tall is shrunk to fit a square — a "☀ 1h 59m" image
+    ends up about a third of its size. Setting ``length`` to
+    ``NSVariableStatusItemLength`` (-1) makes the item as wide as its image, like
+    the system clock.
+
+    Qt does not expose its NSStatusItem, so it is found through this app's
+    ``NSStatusBarWindow`` and its ``statusItem`` accessor. That accessor is not
+    public API: every step is checked, and :meth:`apply` returns False when it
+    is unavailable so callers can fall back to a square icon.
+    """
+
+    SQUARE_LENGTH = -2.0     # NSSquareStatusItemLength
+    VARIABLE_LENGTH = -1.0   # NSVariableStatusItemLength
+
+    def __init__(self) -> None:
+        self._objc: Any = None
+        self._warned = False
+        try:
+            objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc") or "/usr/lib/libobjc.A.dylib")
+            objc.objc_getClass.restype = ctypes.c_void_p
+            objc.objc_getClass.argtypes = [ctypes.c_char_p]
+            objc.sel_registerName.restype = ctypes.c_void_p
+            objc.sel_registerName.argtypes = [ctypes.c_char_p]
+            objc.object_getClassName.restype = ctypes.c_char_p
+            objc.object_getClassName.argtypes = [ctypes.c_void_p]
+            self._objc = objc
+        except OSError as exc:
+            log.warning(kv("objc_runtime_unavailable", error=exc))
+
+    def _send(self, restype: Any, receiver: int, selector: bytes, *args: tuple[Any, Any]) -> Any:
+        fn = ctypes.CFUNCTYPE(restype, ctypes.c_void_p, ctypes.c_void_p, *[t for t, _ in args])(
+            ("objc_msgSend", self._objc)
+        )
+        return fn(receiver, self._objc.sel_registerName(selector), *[v for _, v in args])
+
+    def _responds(self, obj: int, selector: bytes) -> bool:
+        sel = self._objc.sel_registerName(selector)
+        return bool(self._send(ctypes.c_bool, obj, b"respondsToSelector:", (ctypes.c_void_p, sel)))
+
+    def apply(self) -> bool:
+        """Make every square status item of this app variable-width. True if done."""
+        if self._objc is None:
+            return False
+        try:
+            ns_app = self._send(ctypes.c_void_p, self._objc.objc_getClass(b"NSApplication"), b"sharedApplication")
+            windows = self._send(ctypes.c_void_p, ns_app, b"windows") if ns_app else None
+            if not windows:
+                return False
+            found = False
+            for index in range(self._send(ctypes.c_ulong, windows, b"count")):
+                window = self._send(ctypes.c_void_p, windows, b"objectAtIndex:", (ctypes.c_ulong, index))
+                if not window or b"StatusBarWindow" not in (self._objc.object_getClassName(window) or b""):
+                    continue
+                if not self._responds(window, b"statusItem"):
+                    continue
+                item = self._send(ctypes.c_void_p, window, b"statusItem")
+                if not item or not self._responds(item, b"setLength:"):
+                    continue
+                found = True
+                if self._send(ctypes.c_double, item, b"length") == self.SQUARE_LENGTH:
+                    self._send(None, item, b"setLength:", (ctypes.c_double, self.VARIABLE_LENGTH))
+                    log.info(kv("status_item_variable_width"))
+            if not found and not self._warned:
+                self._warned = True
+                log.warning(kv("status_item_not_found", note="menu-bar countdown disabled"))
+            return found
+        except Exception as exc:  # noqa: BLE001 - cosmetic; never crash the app over it
+            if not self._warned:
+                self._warned = True
+                log.warning(kv("status_item_widen_failed", error=exc))
+            return False
+
+
 def assertions_report() -> str:
     """Return ``pmset -g assertions`` output (diagnostics / manual verification)."""
     try:

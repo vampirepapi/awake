@@ -59,6 +59,16 @@ def test_labelled_icon_is_wide_and_plain_icon_is_square(qapp) -> None:
     assert wide.width() > narrow.width()
 
 
+class FakeWidener:
+    def __init__(self, ok: bool) -> None:
+        self.ok = ok
+        self.calls = 0
+
+    def apply(self) -> bool:
+        self.calls += 1
+        return self.ok
+
+
 @pytest.fixture
 def tray(qapp, backend, session_repo, settings_repo, clock, monkeypatch):
     import awake.ui.tray as tray_module
@@ -67,12 +77,14 @@ def tray(qapp, backend, session_repo, settings_repo, clock, monkeypatch):
     sessions = SessionManager(PowerManager(backend), session_repo, clock=clock)
     state = ApplicationState(sessions, SettingsManager(settings_repo))
     controller = tray_module.TrayController(state, lambda page: None, lambda: None)
+    controller._widener = FakeWidener(True)  # offscreen tests have no real menu bar
     yield controller, state, clock
     controller.hide()
 
 
 def test_tray_label_follows_session(tray) -> None:
     controller, state, clock = tray
+    controller.tray.isVisible = lambda: True  # type: ignore[method-assign]
     assert controller._menu_bar_label(None, clock.now) == (None, False)
 
     state.select_duration(3600)
@@ -109,3 +121,13 @@ def test_no_label_on_windows(tray, monkeypatch) -> None:
     state.toggle_session()
     monkeypatch.setattr(tray_module, "IS_MAC", False)
     assert controller._menu_bar_label(state.active_session, clock.now) == (None, False)
+
+
+def test_falls_back_to_plain_icon_when_item_cannot_be_widened(tray) -> None:
+    """A wide image in Qt's square slot would be shrunk to ~1/3 — show the plain sun instead."""
+    controller, state, clock = tray
+    controller.tray.isVisible = lambda: True  # type: ignore[method-assign]
+    controller._widener = FakeWidener(False)
+    state.toggle_session()
+    assert controller._menu_bar_label(state.active_session, clock.now) == (None, False)
+    assert controller._widener.calls >= 1
