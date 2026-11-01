@@ -26,6 +26,7 @@ Builds are not code-signed yet, so macOS and Windows warn on first launch. The r
 - **One-click power button** — only turns on after the operating system confirms the power request.
 - **Timed or indefinite sessions** — 30 min / 1 h / 2 h / Indefinite, with live countdown, progress and end time. Changing the duration of a running session restarts the countdown from now.
 - **Independent controls** — *Keep system awake* (default on) and *Keep display awake* (default off), both changeable mid-session.
+- **Menu bar countdown (macOS)** — while Awake is on, the time left (`1h 59m` … `1m`) or `∞` sits next to the menu-bar icon; updated once a minute, can be turned off in Settings.
 - **Menu bar / system tray** — status, start/stop, durations, power toggles, open, settings, quit. Closing the window keeps Awake running; the macOS Dock icon is hidden while the window is closed.
 - **Session history** — stored in SQLite, sortable, with completed / stopped / interrupted status and a confirmed *Clear history*.
 - **Settings** — launch at sign-in, start minimized, close-to-tray, dark/light theme, default duration and power options, behaviour at launch, notifications.
@@ -39,7 +40,7 @@ Honest status of what has been verified, and how:
 |---|---|---|
 | Automated tests | ✅ 78 mocked + 2 native IOKit tests pass | ✅ 78 mocked tests pass on GitHub's Windows runner |
 | Native power API on real OS | ✅ `pmset -g assertions` shows `PreventUserIdleSystemSleep named: "Awake"`; no display assertion unless enabled; released on stop, quit, SIGTERM and `kill -9` | ⚠️ Real `SetThreadExecutionState` calls succeed on GitHub's Windows runner (`tests/test_native_windows.py`, with `powercfg /requests` confirmation). **Not yet tested by hand on a Windows 10/11 PC** |
-| Packaged app | ✅ `Awake.app` + DMG built and launched; session, single-instance handoff, AppleScript (Cmd+Q path) quit, and Dock hiding (`lsappinfo`: `UIElement` while in the menu bar, `Foreground` with the window open) verified | ⚠️ `Awake.exe` and `Awake-0.1.0-Setup.exe` are built by CI; not yet launched on a Windows desktop |
+| Packaged app | ✅ `Awake.app` + DMG built and launched; session, single-instance handoff, AppleScript (Cmd+Q path) quit, and Dock hiding (`lsappinfo`: `UIElement` while in the menu bar, `Foreground` with the window open) verified | ⚠️ `Awake.exe` and the Setup installer are built by CI; not yet launched on a Windows desktop |
 | Menu bar / tray | ✅ Tray icon created (`tray_shown available=True`); menu logic covered by offscreen tests. Clicking through the real menu bar was **not** automated | ❌ Not verified |
 | Notifications | ⚠️ Implemented via `QSystemTrayIcon.showMessage`; not visually confirmed | ❌ Not verified |
 | Launch at startup | ⚠️ LaunchAgent plist generation unit-tested; a real login cycle was not performed | ⚠️ Run-key logic unit-tested with a fake registry |
@@ -82,15 +83,15 @@ Each platform must be built on that platform — PyInstaller does not cross-comp
 
 | Platform | Command | Output |
 |---|---|---|
-| macOS | `scripts/build_macos.sh` | `dist/Awake.app`, `dist/Awake-0.1.0-macOS-<arch>.dmg` |
-| Windows | `scripts\build_windows.bat` | `dist\Awake\Awake.exe`, `dist\Awake-0.1.0-Setup.exe` (with [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
+| macOS | `scripts/build_macos.sh` | `dist/Awake.app`, `dist/Awake-<version>-macOS-<arch>.dmg` |
+| Windows | `scripts\build_windows.bat` | `dist\Awake\Awake.exe`, `dist\Awake-<version>-Setup.exe` (with [Inno Setup 6](https://jrsoftware.org/isinfo.php)) |
 
 GitHub Actions (`.github/workflows/build-macos.yml`, `build-windows.yml`) run the tests, the native power tests and the packaging on each platform for every push.
 
 To publish a release, bump `__version__` in `awake/__init__.py`, commit, then tag:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 `.github/workflows/release.yml` checks the tag matches the version, builds macOS (arm64 + Intel) and Windows, and publishes a GitHub Release with the DMGs, the Windows installer, a portable zip and `SHA256SUMS.txt`, using `packaging/RELEASE_NOTES.md` as the description.

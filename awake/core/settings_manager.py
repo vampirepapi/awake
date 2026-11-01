@@ -45,6 +45,7 @@ SETTINGS: dict[str, SettingSpec] = {
     "start_minimized": SettingSpec(False),
     "close_to_tray": SettingSpec(True),
     "dark_mode": SettingSpec(True),
+    "show_menu_bar_timer": SettingSpec(True),  # macOS: time left next to the menu-bar icon
     # Power management
     "default_duration": SettingSpec(3600, choices=(1800, 3600, 7200, None)),
     "keep_system_awake_default": SettingSpec(True),

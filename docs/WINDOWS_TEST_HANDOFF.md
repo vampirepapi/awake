@@ -1,6 +1,6 @@
 # Windows test handoff (for a Claude Code session on a Windows 10/11 PC)
 
-You are picking up Awake v0.1.0 on a real Windows PC. Your job: verify that it really works
+You are picking up Awake (latest release) on a real Windows PC. Your job: verify that it really works
 on Windows desktop hardware, fix any Windows-only bugs, and report evidence. Read `README.md`
 and `docs/ARCHITECTURE.md` first.
 
@@ -12,7 +12,7 @@ and `docs/ARCHITECTURE.md` first.
   - `tests/test_native_windows.py`: all 3 pass — real `SetThreadExecutionState` calls, and
     `powercfg /requests` lists the process under SYSTEM (not DISPLAY), moves it to DISPLAY when
     display-awake is on, and drops it on release.
-  - `Awake.exe`, `Awake-0.1.0-Setup.exe` and the portable zip build successfully.
+  - `Awake.exe`, the `Awake-<version>-Setup.exe` installer and the portable zip build successfully.
 - **Never launched on a Windows desktop.** Tray, notifications, installer, autostart, close-to-tray,
   real idle behaviour and performance are all unverified on Windows.
 
@@ -82,7 +82,7 @@ power button, then check each state with `powercfg /requests` and the log:
 winget install JRSoftware.InnoSetup     # if missing
 .\scripts\build_windows.bat
 ```
-Or download `Awake-0.1.0-Setup.exe` from https://github.com/vampirepapi/awake/releases/tag/v0.1.0.
+Or download `Awake-<version>-Setup.exe` from https://github.com/vampirepapi/awake/releases/latest.
 Install it (should not ask for admin; installs to `%LOCALAPPDATA%\Programs\Awake`). Note whether
 SmartScreen appears. Repeat step 3 with the installed `Awake.exe` — powercfg should now show `Awake.exe`.
 

@@ -85,3 +85,22 @@ def session_span(session: Session) -> str:
     same_day = local(session.started_at).date() == local(session.ended_at).date()
     end = format_time(session.ended_at) if same_day else format_datetime(session.ended_at)
     return f"{start} → {end}"
+
+
+def menu_bar_label(remaining_seconds: float) -> str:
+    """Countdown shown next to the menu-bar icon, rounded *up* to the minute.
+
+    ``1h 59m`` … ``1h 00m``, ``59m`` … ``1m`` — it never reads ``0m`` while the
+    session is still running.
+    """
+    total_minutes = max(1, math.ceil(remaining_seconds / 60))
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
+
+
+def seconds_until_label_changes(remaining_seconds: float) -> float:
+    """How long until :func:`menu_bar_label` shows a different value."""
+    if remaining_seconds <= 60:
+        return max(0.0, remaining_seconds)
+    total_minutes = math.ceil(remaining_seconds / 60)
+    return remaining_seconds - (total_minutes - 1) * 60

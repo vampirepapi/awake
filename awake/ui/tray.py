@@ -6,7 +6,7 @@ import logging
 import sys
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, Qt
+from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -16,7 +16,13 @@ from awake.core.session_manager import SUPPORTED_DURATIONS
 from awake.database.models import EndReason, Session
 from awake.logging_setup import kv
 from awake.ui import icons
-from awake.ui.formatting import DURATION_LABELS, format_duration, format_time
+from awake.ui.formatting import (
+    DURATION_LABELS,
+    format_duration,
+    format_time,
+    menu_bar_label,
+    seconds_until_label_changes,
+)
 
 log = logging.getLogger("awake.tray")
 
@@ -37,6 +43,12 @@ class TrayController(QObject):
         self._quit = quit_app
         self._hint_shown = False
 
+        # Fires once per displayed-minute change while a timed session runs (macOS label).
+        self._label_timer = QTimer(self)
+        self._label_timer.setSingleShot(True)
+        self._label_timer.setTimerType(Qt.TimerType.PreciseTimer)  # flip the minute on time
+        self._label_timer.timeout.connect(self.refresh)
+
         self.tray = QSystemTrayIcon(self)
         self.menu = QMenu()
         self._build_menu()
@@ -49,6 +61,7 @@ class TrayController(QObject):
         sessions.session_changed.connect(lambda _s: self.refresh())
         sessions.session_ended.connect(self._on_ended)
         state.selection_changed.connect(self.refresh)
+        state.settings.changed.connect(lambda key, _v: self.refresh() if key == "show_menu_bar_timer" else None)
         hints = QGuiApplication.styleHints()
         if hasattr(hints, "colorSchemeChanged"):
             hints.colorSchemeChanged.connect(lambda *_: self.refresh())
@@ -116,7 +129,7 @@ class TrayController(QObject):
             status = f"Awake is ON · since {format_time(session.started_at)}"
             tooltip = f"{APP_NAME} — on indefinitely"
         else:
-            left = format_duration(max(60, session.remaining_seconds(now) or 0))
+            left = menu_bar_label(session.remaining_seconds(now) or 0)
             status = f"Awake is ON · {left} left"
             tooltip = f"{APP_NAME} — on, {left} left"
         self.status_action.setText(status)
@@ -130,7 +143,21 @@ class TrayController(QObject):
         self.display_action.setChecked(self._state.keep_display)
 
         dark = QGuiApplication.styleHints().colorScheme() != Qt.ColorScheme.Light
-        self.tray.setIcon(icons.tray_icon(session is not None, mask=IS_MAC, dark_background=dark))
+        label, infinite = self._menu_bar_label(session, now)
+        self.tray.setIcon(icons.tray_icon(session is not None, mask=IS_MAC, dark_background=dark,
+                                          label=label, infinite=infinite))
+
+    def _menu_bar_label(self, session: Session | None, now) -> tuple[str | None, bool]:  # noqa: ANN001
+        """Text (or ∞) to draw beside the macOS menu-bar icon; schedules the next update."""
+        self._label_timer.stop()
+        if session is None or not IS_MAC or not self._state.settings.get("show_menu_bar_timer"):
+            return None, False
+        if session.is_indefinite:
+            return None, True
+        remaining = session.remaining_seconds(now) or 0.0
+        # +50 ms so we land just after the boundary, not just before it.
+        self._label_timer.start(int(seconds_until_label_changes(remaining) * 1000) + 50)
+        return menu_bar_label(remaining), False
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         # macOS shows the menu on click; on Windows a left click opens the window.

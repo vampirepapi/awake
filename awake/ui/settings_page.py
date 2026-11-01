@@ -110,6 +110,10 @@ class SettingsPage(QWidget):
                                 self._switch("close_to_tray")))
         general.add(setting_row("Dark mode", "Use the dark appearance. Turn off for the light theme.",
                                 self._switch("dark_mode")))
+        if sys.platform == "darwin":
+            general.add(setting_row("Show time left in the menu bar",
+                                    "Display the countdown (or ∞) next to the menu-bar icon while Awake is on.",
+                                    self._switch("show_menu_bar_timer")))
         root.addWidget(general)
 
         power = SettingsSection("Power management")
