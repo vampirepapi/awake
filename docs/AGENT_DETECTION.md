@@ -101,7 +101,7 @@ port**, works even if Awake isn't running yet, cross-platform. Awake watches tha
 - **Grace period** 60 s after the last session goes idle (avoids flapping between turns).
 - **Stale-busy protection**: a busy session with no signal for 20 min *and* no confirmation from Layer 1 is treated as
   idle; a dead PID ends the session immediately (exit events, not polling).
-- **Absolute cap** (default 4 h per continuous busy stretch, configurable).
+- **Absolute cap**: 4 h per continuous hold (fixed in 0.2; a setting may follow).
 - **Battery policy**: optional "don't keep awake for agents on battery below 20 %" — the main complaint about Claude's
   built-in behaviour.
 - **Visible**: dashboard card "Agents" listing detected sessions and why Awake is holding the machine; menu bar shows

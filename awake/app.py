@@ -10,6 +10,8 @@ Shutdown safety net (any of these releases native power requests):
 from __future__ import annotations
 
 import atexit
+import hashlib
+import os
 import logging
 import signal
 import socket
@@ -36,7 +38,14 @@ from awake.platforms import AUTOSTART_FLAG, autostart_command, create_autostart,
 
 log = logging.getLogger("awake.app")
 
-_INSTANCE_KEY = f"{BUNDLE_ID}.instance"
+def _instance_key() -> str:
+    """One running Awake per data folder: a separate ``AWAKE_DATA_DIR`` (portable / test
+    installs) gets its own instance instead of handing off to the main one."""
+    override = os.environ.get("AWAKE_DATA_DIR")
+    if not override:
+        return f"{BUNDLE_ID}.instance"
+    digest = hashlib.sha1(os.path.abspath(override).encode("utf-8")).hexdigest()[:10]
+    return f"{BUNDLE_ID}.instance.{digest}"
 
 
 class _QuitWatcher(QObject):
@@ -55,8 +64,8 @@ class _QuitWatcher(QObject):
 class SingleInstance:
     """Ensures one running Awake per user; a second launch just shows the first window."""
 
-    def __init__(self, key: str = _INSTANCE_KEY) -> None:
-        self._key = key
+    def __init__(self, key: str | None = None) -> None:
+        self._key = key or _instance_key()
         self._server: QLocalServer | None = None
 
     def notify_existing(self) -> bool:

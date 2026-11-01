@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from awake.core.agents.discovery import ProcessInfo
@@ -31,6 +33,12 @@ QUIET_ENV: dict[str, str] = {
 
 _NATIVE_NAMES = {"claude", "claude.exe"}
 _NODE_NAMES = {"node", "node.exe", "bun", "bun.exe"}
+# `claude` processes that are not coding sessions: our own status queries, MCP servers, the
+# browser-extension bridge. Counting them would keep polling alive with nothing to watch.
+_NON_SESSION_ARGS = {"agents", "mcp", "--chrome-native-host"}
+# The Claude *Desktop* app's executable is also called "Claude"/"claude.exe" — never the CLI.
+_DESKTOP_MARKERS = ("/contents/macos/", "/anthropicclaude/", "/windowsapps/")
+_VERSION_RE = re.compile(r"[/\\]versions[/\\](\d+(?:\.\d+)*)$")
 
 
 class ClaudeOutputError(ValueError):
@@ -52,8 +60,10 @@ def match_claude_process(proc: ProcessInfo) -> ClaudeProcess | None:
     argv = proc.cmdline
     if not argv:
         return None
-    # Our own (or anyone's) `claude agents …` query is not a session.
-    if len(argv) > 1 and argv[1] == "agents":
+    if any(arg in _NON_SESSION_ARGS for arg in argv[1:2]) or "--chrome-native-host" in argv:
+        return None
+    exe_path = (proc.exe or argv[0]).replace("\\", "/").lower()
+    if any(marker in exe_path for marker in _DESKTOP_MARKERS):
         return None
     first = _basename(argv[0])
     if first in _NATIVE_NAMES or _basename(proc.exe or "") in _NATIVE_NAMES:
@@ -72,12 +82,26 @@ def find_claude_processes(processes: list[ProcessInfo]) -> list[ClaudeProcess]:
     return [m for p in processes if (m := match_claude_process(p)) is not None]
 
 
-def agents_command(processes: list[ClaudeProcess]) -> list[str] | None:
-    """Command line for ``claude agents --json`` using a running installation."""
-    for proc in processes:
-        if proc.command and os.path.isabs(proc.command[0]):
-            return [*proc.command, "agents", "--json"]
-    return None
+def _version_key(proc: ClaudeProcess) -> tuple[tuple[int, ...], int]:
+    match = _VERSION_RE.search(proc.command[0])
+    version = tuple(int(part) for part in match.group(1).split(".")) if match else ()
+    return version, proc.pid
+
+
+def agents_command(
+    processes: list[ClaudeProcess], exists: Callable[[str], bool] = os.path.exists
+) -> list[str] | None:
+    """Command line for ``claude agents --json`` from the newest running installation.
+
+    Old sessions keep running an older binary after an auto-update, and the updater
+    prunes old versions — so prefer the highest version (then newest PID) whose
+    executable still exists.
+    """
+    candidates = [p for p in processes if p.command and os.path.isabs(p.command[0]) and exists(p.command[0])]
+    if not candidates:
+        return None
+    best = max(candidates, key=_version_key)
+    return [*best.command, "agents", "--json"]
 
 
 def parse_agents_json(text: str) -> list[AgentSession]:

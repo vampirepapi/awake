@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from PySide6.QtCore import QCoreApplication
 
 from awake.core.agents.claude import (
     QUIET_ENV,
@@ -105,7 +106,8 @@ def test_agents_command_requires_absolute_path() -> None:
     relative = find_claude_processes([proc(1, "claude")])          # exe unknown, argv[0] relative
     assert agents_command(relative) is None
     absolute = find_claude_processes([proc(1, "claude", exe=CLAUDE_BIN)])
-    assert agents_command(absolute) == [CLAUDE_BIN, "agents", "--json"]
+    assert agents_command(absolute, exists=lambda _p: True) == [CLAUDE_BIN, "agents", "--json"]
+    assert agents_command(absolute, exists=lambda _p: False) is None   # pruned by the updater
 
 
 def test_quiet_env_disables_nonessential_traffic() -> None:
@@ -126,7 +128,7 @@ class FakeRunner:
 
 
 def make_monitor(qapp, runner: FakeRunner, processes: list[ProcessInfo]) -> tuple[AgentMonitor, list[AgentSnapshot]]:
-    monitor = AgentMonitor(runner=runner, lister=lambda: processes)
+    monitor = AgentMonitor(runner=runner, lister=lambda: processes, path_exists=lambda _p: True)
     seen: list[AgentSnapshot] = []
     monitor.snapshot_ready.connect(seen.append)
     return monitor, seen
@@ -267,6 +269,7 @@ def test_power_error_reported_once_then_retried(coord) -> None:
     backend.fail_on.add("prevent_system")
     coordinator.update(busy_snapshot("busy"))
     coordinator.update(busy_snapshot("busy"))
+    QCoreApplication.processEvents()  # the error is delivered on the next event-loop turn
     assert coordinator.activity.state is AgentHoldState.ERROR and len(errors) == 1
     backend.fail_on.clear()
     coordinator.update(busy_snapshot("busy"))
@@ -298,3 +301,157 @@ def test_shutdown_releases_and_ignores_later_updates(coord) -> None:
     coordinator.shutdown()
     coordinator.update(busy_snapshot("busy"))
     assert not backend.system and POWER_OWNER not in power.owners
+
+
+# --------------------------------------------------------------------------- review regressions
+
+
+@pytest.mark.parametrize("argv,exe", [
+    (("/Applications/Claude.app/Contents/MacOS/Claude",), "/Applications/Claude.app/Contents/MacOS/Claude"),
+    ((r"C:\Users\me\AppData\Local\AnthropicClaude\app-1.0\claude.exe",),
+     r"C:\Users\me\AppData\Local\AnthropicClaude\app-1.0\claude.exe"),
+    (("claude", "--chrome-native-host"), CLAUDE_BIN),      # browser-extension bridge
+    (("claude", "mcp", "serve"), CLAUDE_BIN),              # MCP server, not a session
+])
+def test_desktop_app_and_helpers_are_not_sessions(argv, exe) -> None:
+    assert match_claude_process(proc(20, *argv, exe=exe)) is None
+
+
+def test_newest_installed_version_is_queried() -> None:
+    old = "/Users/me/.local/share/claude/versions/2.1.306"
+    new = "/Users/me/.local/share/claude/versions/2.1.316"
+    procs = find_claude_processes([proc(5, "claude", exe=old), proc(90, "claude", exe=new), proc(7, "claude", exe=old)])
+    assert agents_command(procs, exists=lambda _p: True)[0] == new
+    # newest binary pruned → fall back to one that still exists
+    assert agents_command(procs, exists=lambda p: p == old)[0] == old
+
+
+def test_cap_still_applies_after_idle_and_busy_again_within_grace(coord) -> None:
+    coordinator, _, backend, clock, _ = coord
+    coordinator.update(busy_snapshot("busy"))
+    for _ in range(12):                                  # 12 turns x 20.5 min = 246 min > 4 h cap; idle < grace each time
+        clock.advance(20 * 60)
+        coordinator.update(busy_snapshot("idle"))
+        clock.advance(30)
+        coordinator.update(busy_snapshot("busy"))
+    coordinator._cap_timer.check()
+    assert coordinator.activity.state is AgentHoldState.CAPPED and not backend.system
+
+
+def test_unknown_status_keeps_the_current_decision(coord) -> None:
+    coordinator, _, backend, clock, _ = coord
+    unavailable = AgentSnapshot((), SourceState.UNAVAILABLE, "Claude Code didn't respond.")
+    coordinator.update(busy_snapshot("busy"))
+    coordinator.update(unavailable)                      # a timeout is not "idle"
+    clock.advance(120)
+    coordinator._grace_timer.check()
+    assert backend.system and coordinator.activity.state is AgentHoldState.HOLDING
+    assert coordinator.activity.snapshot.claude_detail == "Claude Code didn't respond."
+
+
+def test_unknown_status_does_not_reset_the_cap(coord) -> None:
+    coordinator, _, backend, clock, _ = coord
+    coordinator.update(busy_snapshot("busy"))
+    clock.advance(4 * 3600)
+    coordinator._cap_timer.check()
+    coordinator.update(AgentSnapshot((), SourceState.UNAVAILABLE, "x"))
+    coordinator.update(busy_snapshot("busy"))
+    assert coordinator.activity.state is AgentHoldState.CAPPED and not backend.system
+
+
+def test_battery_replug_while_busy_reacquires(coord) -> None:
+    coordinator, _, backend, _, battery = coord
+    battery.state = (50.0, False)
+    coordinator.update(busy_snapshot("busy"))
+    battery.state = (10.0, False)
+    coordinator.update(busy_snapshot("busy"))
+    assert not backend.system
+    battery.state = (10.0, True)
+    coordinator.update(busy_snapshot("busy"))
+    assert backend.system and coordinator.activity.state is AgentHoldState.HOLDING
+
+
+def test_changed_only_emitted_when_something_changes(coord) -> None:
+    coordinator, _, _, _, _ = coord
+    seen = []
+    coordinator.changed.connect(seen.append)
+    for _ in range(5):
+        coordinator.update(busy_snapshot("busy"))
+    assert len(seen) == 1
+
+
+def test_claude_exiting_during_backoff_clears_it(qapp) -> None:
+    runner = FakeRunner(code=1, stdout="")
+    processes = [proc(5, "claude", exe=CLAUDE_BIN)]
+    monitor, seen = make_monitor(qapp, runner, processes)
+    monitor.poll()                                        # fails → back-off
+    processes.clear()
+    monitor.poll()                                        # Claude gone → back-off cleared
+    assert seen[-1].claude is SourceState.NOT_RUNNING
+    processes.append(proc(6, "claude", exe=CLAUDE_BIN))
+    runner.code, runner.stdout = 0, "[]"
+    monitor.poll()
+    assert len(runner.calls) == 2 and seen[-1].claude is SourceState.ACTIVE
+
+
+def test_result_after_stop_is_ignored(qapp) -> None:
+    pending = []
+
+    class SlowRunner:
+        def run(self, argv, env, timeout_ms, done) -> None:  # noqa: ANN001
+            pending.append(done)
+
+    monitor = AgentMonitor(runner=SlowRunner(), lister=lambda: [proc(5, "claude", exe=CLAUDE_BIN)],
+                           path_exists=lambda _p: True)
+    seen = []
+    monitor.snapshot_ready.connect(seen.append)
+    monitor.poll()
+    monitor.stop()
+    pending[0](0, json.dumps([{"pid": 5, "status": "busy", "sessionId": "a"}]))
+    assert not seen[-1].any_busy                          # stale busy result dropped
+
+
+def test_sessions_without_a_visible_process_are_ignored(qapp) -> None:
+    runner = FakeRunner(stdout=json.dumps([{"pid": 5, "status": "busy", "sessionId": "a"},
+                                           {"pid": 999, "status": "busy", "sessionId": "ghost"}]))
+    monitor, seen = make_monitor(qapp, runner, [proc(5, "claude", exe=CLAUDE_BIN)])
+    monitor.poll()
+    assert [s.session_id for s in seen[-1].sessions] == ["a"]
+
+
+# --------------------------------------------------------------------------- real QProcess runner
+
+
+def _run_real(argv: list[str], timeout_ms: int) -> tuple[int | None, str]:
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    from awake.core.agents.monitor import QProcessRunner
+
+    runner = QProcessRunner()
+    result: list[tuple[int | None, str]] = []
+    loop = QEventLoop()
+    runner.run(argv, {"AWAKE_TEST_VAR": "1"}, timeout_ms, lambda c, o: (result.append((c, o)), loop.quit()))
+    QTimer.singleShot(10_000, loop.quit)
+    loop.exec()
+    return result[0]
+
+
+def test_qprocess_runner_success_and_env(qapp) -> None:
+    import sys
+
+    code, out = _run_real([sys.executable, "-c", "import os; print(os.environ['AWAKE_TEST_VAR'])"], 10_000)
+    assert code == 0 and out.strip() == "1"
+
+
+def test_qprocess_runner_timeout_kills_without_blocking(qapp) -> None:
+    import sys
+    import time
+
+    start = time.monotonic()
+    code, _ = _run_real([sys.executable, "-c", "import time; time.sleep(30)"], 300)
+    assert code is None and time.monotonic() - start < 5
+
+
+def test_qprocess_runner_missing_program(qapp) -> None:
+    code, _ = _run_real(["/nonexistent/claude-binary", "agents", "--json"], 5_000)
+    assert code is None

@@ -20,9 +20,9 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import StrEnum
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
-from awake.core.agents.models import AgentSession, AgentSnapshot
+from awake.core.agents.models import AgentSession, AgentSnapshot, SourceState
 from awake.core.power_manager import PowerError, PowerManager
 from awake.core.timer_manager import Clock, TimerManager
 from awake.database.models import utcnow
@@ -88,6 +88,7 @@ class AgentCoordinator(QObject):
         self._shut_down = False
         self._snapshot = AgentSnapshot()
         self._state = AgentHoldState.IDLE
+        self._last_emitted: tuple | None = None
         self._grace_timer = TimerManager(clock=clock, parent=self)
         self._grace_timer.expired.connect(self._on_grace_expired)
         self._cap_timer = TimerManager(clock=clock, parent=self)
@@ -127,7 +128,17 @@ class AgentCoordinator(QObject):
     def update(self, snapshot: AgentSnapshot) -> None:
         if self._shut_down:
             return
-        self._snapshot = snapshot if self._enabled else AgentSnapshot()
+        if not self._enabled:
+            snapshot = AgentSnapshot()
+        elif snapshot.claude is SourceState.UNAVAILABLE:
+            # A failed status query tells us nothing about whether the agent is working.
+            # Keep the current hold decision (still bounded by the cap and the grace
+            # timer) and only update what the UI shows.
+            self._snapshot = AgentSnapshot(self._snapshot.sessions, snapshot.claude, snapshot.claude_detail,
+                                           snapshot.taken_at)
+            self._emit_if_changed()
+            return
+        self._snapshot = snapshot
         self._evaluate()
 
     def shutdown(self) -> None:
@@ -149,8 +160,7 @@ class AgentCoordinator(QObject):
             return
         busy = self._snapshot.any_busy
         if not busy:
-            self._capped = False  # every agent idle at least once → cap resets
-            self._cap_timer.cancel()
+            self._capped = False  # a successful reading with every agent idle → cap resets
             if self._holding and not self._grace_timer.is_running:
                 self._grace_timer.schedule(self._now_plus(self._grace))
                 log.info(kv("agent_grace_started", seconds=self._grace))
@@ -172,10 +182,11 @@ class AgentCoordinator(QObject):
                 self._power.acquire(POWER_OWNER, system=True, display=False)
             except PowerError as exc:
                 log.error(kv("agent_acquire_failed", error=exc))
+                self._set_state(AgentHoldState.ERROR)
                 if not self._error_reported:
                     self._error_reported = True
-                    self.error_occurred.emit(f"Awake couldn't keep your computer awake for the agent: {exc}")
-                self._set_state(AgentHoldState.ERROR)
+                    message = f"Awake couldn't keep your computer awake for the agent: {exc}"
+                    QTimer.singleShot(0, lambda: self.error_occurred.emit(message))
                 return
             self._holding = True
             self._error_reported = False
@@ -221,4 +232,12 @@ class AgentCoordinator(QObject):
 
     def _set_state(self, state: AgentHoldState) -> None:
         self._state = state
+        self._emit_if_changed()
+
+    def _emit_if_changed(self) -> None:
+        snap = self._snapshot
+        key = (self._state, tuple(s.session_id for s in snap.busy_sessions), snap.claude, snap.claude_detail)
+        if key == self._last_emitted:
+            return
+        self._last_emitted = key
         self.changed.emit(self.activity)

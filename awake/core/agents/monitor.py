@@ -12,6 +12,7 @@ of retrying every pass.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Callable
 from typing import Protocol
@@ -32,7 +33,8 @@ from awake.logging_setup import kv
 log = logging.getLogger("awake.agents")
 
 POLL_INTERVAL_MS = 20_000
-FAILURE_BACKOFF_MS = 5 * 60_000
+FAILURE_BACKOFF_MS = 5 * 60_000     # the CLI can't do it (old version, unexpected output)
+TRANSIENT_BACKOFF_MS = 60_000       # it didn't answer in time / couldn't start — try again soon
 COMMAND_TIMEOUT_MS = 10_000
 
 RunCallback = Callable[[int | None, str], None]  # (exit code or None on failure/timeout, stdout)
@@ -43,53 +45,61 @@ class CommandRunner(Protocol):
 
 
 class QProcessRunner(QObject):
-    """Runs one command at a time with QProcess; never blocks the event loop."""
+    """Runs one command at a time without blocking the event loop.
+
+    A single long-lived QProcess and timer are reused for every call and wired once
+    to bound methods. Creating a QProcess per call with closures that reference it
+    (and deleteLater-ing it) creates Python/Qt reference cycles whose collection can
+    free Qt objects at the wrong moment — that crashed in testing.
+    """
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._busy = False
+        self._process = QProcess(self)
+        self._process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
+        self._process.finished.connect(self._on_finished)
+        self._process.errorOccurred.connect(self._on_error)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_timeout)
+        self._done: RunCallback | None = None
+        self._timeout_ms = 0
+
+    @property
+    def busy(self) -> bool:
+        return self._done is not None
 
     def run(self, argv: list[str], env: dict[str, str], timeout_ms: int, done: RunCallback) -> None:
-        if self._busy:
-            return
-        self._busy = True
-        process = QProcess(self)
+        if self._done is not None:
+            return  # previous query still running; the next poll will try again
+        self._done = done
+        self._timeout_ms = timeout_ms
         environment = QProcessEnvironment.systemEnvironment()
         for key, value in env.items():
             environment.insert(key, value)
-        process.setProcessEnvironment(environment)
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.SeparateChannels)
-        timer = QTimer(process)
-        timer.setSingleShot(True)
-        finished = {"done": False}
+        self._process.setProcessEnvironment(environment)
+        self._timer.start(timeout_ms)
+        self._process.start(argv[0], argv[1:])
 
-        def finish(code: int | None) -> None:
-            if finished["done"]:
-                return
-            finished["done"] = True
-            timer.stop()
-            out = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
-            self._busy = False
-            process.deleteLater()
-            done(code, out)
+    def _complete(self, code: int | None) -> None:
+        done, self._done = self._done, None
+        if done is None:
+            return
+        self._timer.stop()
+        out = bytes(self._process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        self._process.readAllStandardError()  # discard; may contain update notices
+        done(code, out)
 
-        def on_finished(code: int, status: QProcess.ExitStatus) -> None:
-            finish(code if status == QProcess.ExitStatus.NormalExit else None)
+    def _on_finished(self, code: int, status: QProcess.ExitStatus) -> None:
+        self._complete(code if status == QProcess.ExitStatus.NormalExit else None)
 
-        def on_error(error: QProcess.ProcessError) -> None:
-            if error == QProcess.ProcessError.FailedToStart:
-                finish(None)
+    def _on_error(self, error: QProcess.ProcessError) -> None:
+        if error == QProcess.ProcessError.FailedToStart:
+            self._complete(None)
 
-        def on_timeout() -> None:
-            log.warning(kv("agent_query_timeout", timeout_ms=timeout_ms))
-            process.kill()
-            finish(None)
-
-        process.finished.connect(on_finished)
-        process.errorOccurred.connect(on_error)
-        timer.timeout.connect(on_timeout)
-        timer.start(timeout_ms)
-        process.start(argv[0], argv[1:])
+    def _on_timeout(self) -> None:
+        log.warning(kv("agent_query_timeout", timeout_ms=self._timeout_ms))
+        self._process.kill()  # `finished` (CrashExit) follows and completes the call
 
 
 class AgentMonitor(QObject):
@@ -100,13 +110,17 @@ class AgentMonitor(QObject):
         runner: CommandRunner | None = None,
         lister: ProcessLister = list_processes,
         interval_ms: int = POLL_INTERVAL_MS,
+        path_exists: Callable[[str], bool] = os.path.exists,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
+        self._path_exists = path_exists
         self._runner = runner if runner is not None else QProcessRunner(self)
         self._lister = lister
         self._interval_ms = interval_ms
         self._backoff_until = 0.0
+        self._generation = 0  # results from a previous start()/stop() cycle are ignored
+        self._live_pids: set[int] = set()
         self._last: AgentSnapshot = AgentSnapshot()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.poll)
@@ -129,6 +143,8 @@ class AgentMonitor(QObject):
         if self._timer.isActive():
             self._timer.stop()
             log.info(kv("agent_monitor_stopped"))
+        self._generation += 1
+        self._backoff_until = 0.0
         self._emit(AgentSnapshot())
 
     def poll(self) -> None:
@@ -143,15 +159,20 @@ class AgentMonitor(QObject):
             return
         if time.monotonic() < self._backoff_until:
             return  # keep the last (unavailable) snapshot until the back-off ends
-        argv = agents_command(claude)
+        argv = agents_command(claude, exists=self._path_exists)
         if argv is None:
             self._fail("Can't locate Claude Code.")
             return
-        self._runner.run(argv, QUIET_ENV, COMMAND_TIMEOUT_MS, self._on_result)
+        self._live_pids = {p.pid for p in claude}
+        generation = self._generation
+        self._runner.run(argv, QUIET_ENV, COMMAND_TIMEOUT_MS,
+                         lambda code, out: self._on_result(code, out, generation))
 
-    def _on_result(self, code: int | None, stdout: str) -> None:
+    def _on_result(self, code: int | None, stdout: str, generation: int | None = None) -> None:
+        if generation is not None and generation != self._generation:
+            return  # stopped (or restarted) while the query was running
         if code is None:
-            self._fail("Claude Code didn't respond.")
+            self._fail("Claude Code didn't respond.", transient=True)
             return
         if code != 0:
             self._fail("Update Claude Code to enable this.")
@@ -162,12 +183,15 @@ class AgentMonitor(QObject):
             log.warning(kv("agent_query_bad_output", error=exc))
             self._fail("Unexpected Claude Code status.")
             return
-        self._emit(AgentSnapshot(tuple(sessions), SourceState.ACTIVE))
+        # Belt and braces: only trust "busy" for a process we can see running right now.
+        live = [s for s in sessions if s.pid in self._live_pids]
+        self._emit(AgentSnapshot(tuple(live), SourceState.ACTIVE))
 
-    def _fail(self, reason: str) -> None:
+    def _fail(self, reason: str, transient: bool = False) -> None:
         if self._last.claude is not SourceState.UNAVAILABLE:
             log.warning(kv("agent_source_unavailable", agent="claude-code", reason=reason))
-        self._backoff_until = time.monotonic() + FAILURE_BACKOFF_MS / 1000
+        backoff_ms = TRANSIENT_BACKOFF_MS if transient else FAILURE_BACKOFF_MS
+        self._backoff_until = time.monotonic() + backoff_ms / 1000
         self._emit(AgentSnapshot(claude=SourceState.UNAVAILABLE, claude_detail=reason))
 
     def _emit(self, snapshot: AgentSnapshot) -> None:
