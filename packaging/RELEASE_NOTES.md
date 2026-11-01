@@ -1,5 +1,11 @@
 Awake keeps your computer from going to sleep while you work: one click, for 30 minutes, 1 hour, 2 hours or until you stop it. The display can still turn off. It lives in the menu bar / system tray, works offline and collects nothing.
 
+## What's new in 0.1.2
+
+- **macOS:** while Awake is on, the menu bar shows the time left next to the icon (`☀ 1h 59m` … `☀ 1m`), or `☀ ∞` for indefinite sessions. It updates once a minute and can be turned off in Settings › General.
+- Fixed: the countdown was drawn at about a third of its size because the menu-bar slot was a fixed square.
+- Windows: unchanged. The tray icon stays a plain sun/moon; hover it to see the time left.
+
 ## Download
 
 | Your computer | File |

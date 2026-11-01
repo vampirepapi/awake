@@ -2,7 +2,7 @@
 
 APP_NAME = "Awake"
 APP_TAGLINE = "Stay focused. Stay awake."
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 # Reverse-DNS identifier used for the macOS bundle, LaunchAgent label and the
 # single-instance socket.

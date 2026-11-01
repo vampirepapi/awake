@@ -91,7 +91,7 @@ GitHub Actions (`.github/workflows/build-macos.yml`, `build-windows.yml`) run th
 To publish a release, bump `__version__` in `awake/__init__.py`, commit, then tag:
 
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 `.github/workflows/release.yml` checks the tag matches the version, builds macOS (arm64 + Intel) and Windows, and publishes a GitHub Release with the DMGs, the Windows installer, a portable zip and `SHA256SUMS.txt`, using `packaging/RELEASE_NOTES.md` as the description.
