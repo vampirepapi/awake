@@ -112,6 +112,13 @@ the PC alone ~5 min. Expected: screen turns off, PC does **not** sleep. Evidence
 unbroken log, and `powercfg /systemsleepdiagnostics` or the System event log (Kernel-Power events 42/107) shows no
 sleep in that window. Repeat once without Awake to show the PC *does* sleep, so the result is attributable.
 
+### 7b. Modern Standby on battery
+Check `powercfg /a` — if it lists "Standby (S0 Low Power Idle)" this is a Modern Standby device. Microsoft documents
+that on battery, system power requests are ended 5 minutes after the sleep timeout
+(https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-powersetrequest). Repeat the idle test on
+battery and record whether Awake's request survives past sleep-timeout + 5 min. Report the result either way; it
+decides what the README must tell Windows laptop users.
+
 ### 8. Performance
 With a session active and the window hidden:
 ```powershell
